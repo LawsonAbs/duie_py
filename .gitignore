@@ -1,4 +1,4 @@
-./data
+data/
 ./checkpoints
 ./chechpoints_bp
 __pycache__/
