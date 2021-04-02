@@ -1,0 +1,5 @@
+./data
+./checkpoints
+./chechpoints_bp
+__pycache__/
+./vscode
