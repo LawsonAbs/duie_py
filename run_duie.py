@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from models import SubjectModel
 import logging
 import argparse
 import os
@@ -31,9 +32,13 @@ import torch as t
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
+from torch.utils.data.distributed import DistributedSampler 
+from torch.utils.data import BatchSampler,SequentialSampler
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from transformers import BertTokenizer, BertForSequenceClassification
+from transformers.utils.dummy_pt_objects import BertModel
 
-from data_loader import DuIEDataset, DataCollator
+from data_loader import DuIEDataset, DataCollator,SubjectDataset,SubjectDataCollator
 from utils import decoding, find_entity, get_precision_recall_f1, write_prediction_results
 
 # yapf: disable
@@ -43,7 +48,7 @@ parser.add_argument("--do_predict", action='store_true', default=False, help="do
 parser.add_argument("--init_checkpoint", default=None, type=str, required=False, help="Path to initialize params from")
 parser.add_argument("--data_path", default="./data", type=str, required=False, help="Path to data.")
 parser.add_argument("--predict_data_file", default="./data/test_data.json", type=str, required=False, help="Path to data.")
-parser.add_argument("--output_dir", default="./checkpoints", type=str, required=False, help="The output directory where the model predictions and checkpoints will be written.")
+parser.add_argument("--output_dir", default="./checkpoints", type=str, required=False, help="The output directory where the model_subject predictions and checkpoints will be written.")
 parser.add_argument("--max_seq_length", default=128, type=int,help="The maximum total input sequence length after tokenization. Sequences longer "
     "than this will be truncated, sequences shorter will be padded.", )
 parser.add_argument("--batch_size", default=8, type=int, help="Batch size per GPU/CPU for training.", )
@@ -76,7 +81,7 @@ def set_random_seed(seed):
     """sets random seed"""
     random.seed(seed)
     np.random.seed(seed)
-    t.seed(seed)
+    #t.seed(seed)  # 为什么torch 也要设置这个seed ？
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s -%(name)s - %(message)s',
                     datefmt='%m/%d%/%Y %H:%M:%S',
@@ -85,7 +90,7 @@ logger = logging.getLogger("duie")
 
 
 @t.no_grad()
-def evaluate(model, criterion, data_loader, file_path, mode):
+def evaluate(model_subject, criterion, data_loader, file_path, mode):
     """
     mode eval:
     eval on development set and compute P/R/F1, called between training.
@@ -94,7 +99,7 @@ def evaluate(model, criterion, data_loader, file_path, mode):
         predict_test.json and predict_test.json.zip \
         under args.data_path dir for later submission or evaluation.
     """
-    model.eval()
+    model_subject.eval()
     probs_all = None
     seq_len_all = None
     tok_to_orig_start_index_all = None
@@ -103,29 +108,18 @@ def evaluate(model, criterion, data_loader, file_path, mode):
     eval_steps = 0
     for batch in tqdm(data_loader, total=len(data_loader)):
         eval_steps += 1
-        input_ids, seq_len, tok_to_orig_start_index, tok_to_orig_end_index, labels = batch
-        logits = model(input_ids=input_ids)
-        mask = (input_ids != 0).logical_and((input_ids != 1)).logical_and(
-            (input_ids != 2))
-        loss = criterion(logits, labels, mask)
-        loss_all += loss.numpy().item()
+        input_ids,token_type_ids,attention_mask, seq_lens, labels = batch
+        logits = model_subject(input_ids=input_ids)
+        #mask = (input_ids != 0).logical_and((input_ids != 1)).logical_and((input_ids != 2)) # 作用是什么？
+        loss = criterion(logits, labels )
+        loss_all += loss.item()
         probs = F.sigmoid(logits)
         if probs_all is None:
             probs_all = probs.numpy()
-            seq_len_all = seq_len.numpy()
-            tok_to_orig_start_index_all = tok_to_orig_start_index.numpy()
-            tok_to_orig_end_index_all = tok_to_orig_end_index.numpy()
+            seq_len_all = seq_len.numpy()            
         else:
             probs_all = np.append(probs_all, probs.numpy(), axis=0)
-            seq_len_all = np.append(seq_len_all, seq_len.numpy(), axis=0)
-            tok_to_orig_start_index_all = np.append(
-                tok_to_orig_start_index_all,
-                tok_to_orig_start_index.numpy(),
-                axis=0)
-            tok_to_orig_end_index_all = np.append(
-                tok_to_orig_end_index_all,
-                tok_to_orig_end_index.numpy(),
-                axis=0)
+            seq_len_all = np.append(seq_len_all, seq_len.numpy(), axis=0)                        
     loss_avg = loss_all / eval_steps
     print("eval loss: %f" % (loss_avg))
 
@@ -157,82 +151,97 @@ def evaluate(model, criterion, data_loader, file_path, mode):
 
 
 def do_train():
+    # Reads subject_map.
+    subject_map_path = os.path.join(args.data_path, "subject2id.json")
+    if not (os.path.exists(subject_map_path) and os.path.isfile(subject_map_path)):
+        sys.exit("{} dose not exists or is not a file.".format(subject_map_path))
+    with open(subject_map_path, 'r', encoding='utf8') as fp:
+        subject_map = json.load(fp)
+
+    # Reads object_map.
+    object_map_path = os.path.join(args.data_path, "object2id.json")
+    if not (os.path.exists(object_map_path) and os.path.isfile(object_map_path)):
+        sys.exit("{} dose not exists or is not a file.".format(object_map_path))
+    with open(object_map_path, 'r', encoding='utf8') as fp:
+        object_map = json.load(fp)
+
+
     # Reads label_map.
-    label_map_path = os.path.join(args.data_path, "predicate2id.json")
-    if not (os.path.exists(label_map_path) and os.path.isfile(label_map_path)):
+    relation_map_path = os.path.join(args.data_path, "predicate2id.json")
+    if not (os.path.exists(relation_map_path) and os.path.isfile(relation_map_path)):
         sys.exit("{} dose not exists or is not a file.".format(label_map_path))
-    with open(label_map_path, 'r', encoding='utf8') as fp:
-        label_map = json.load(fp)
-    num_classes = (len(label_map.keys()) - 2) * 2 + 2
+    with open(relation_map_path, 'r', encoding='utf8') as fp:
+        relation_map = json.load(fp)    
 
-    # Loads pretrained model
-    model = BertForSequenceClassification.from_pretrained(
-        "ernie-1.0", num_classes=num_classes) # 直接加载一个分类模型    
+    subject_class_num =  len(subject_map.keys())*2 + 2 # 得出subject的class num
+    object_class_num = len(object_map.keys()) * 2 + 2 # 得出object 的class num    
+    relation_class_num = len(relation_map.keys())*2 + 2# 得出 relation 的 个数
 
-    # Loads model parameters.
-    # 断点加载
-    if (os.path.exists(args.init_checkpoint) and
-            os.path.isfile(args.init_checkpoint)):        
-        state_dict = t.load(args.init_checkpoint)
-        model.set_dict(state_dict)
-
-    tokenizer = BertTokenizer.from_pretrained("ernie-1.0")
-    criterion = BCELossForDuIE()
+    # ========================== subtask 1. 预测subject ==========================
+    # 这一部分我用一个 NER 任务来做，但是原任务用的是 start + end 的方式，原理是一样的
+    # ========================== =================== ==========================        
+    name_or_path = "/home/lawson/pretrain/bert-base-chinese"
+    model_subject = SubjectModel(name_or_path,768,out_fea=subject_class_num)
+    #model_object = ObjectModel(name_or_path)
+    model_subject = model_subject.cuda()
+    tokenizer = BertTokenizer.from_pretrained("/home/lawson/pretrain/bert-base-chinese")
+    criterion = nn.CrossEntropyLoss() # 使用交叉熵计算损失
 
     # Loads dataset.
-    train_dataset = DuIEDataset.from_file(
-        os.path.join(args.data_path, 'train_data.json'),
+    train_dataset = SubjectDataset.from_file(
+        os.path.join(args.data_path, 'train_data_100.json'),
         tokenizer,
         args.max_seq_length,
         True
-        #cache_file_path = './cache/train.pkl'
         )
-    # TODO: 这里需要将sample修改一下
-    train_batch_sampler = t.io.DistributedBatchSampler(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        drop_last=True)
-    collator = DataCollator()
-    train_data_loader = DataLoader(
+    # 这里将DistributedBatchSample(paddle) 修改成了 DistributedSample(torch)    
+    # 如果使用 DistributedSampler 那么应该就是一个多进程加载数据
+    # train_batch_sampler = DistributedSampler(
+    #     train_dataset,
+    #     shuffle=True,
+    #     drop_last=True 
+    #     )
+    collator = SubjectDataCollator()
+    train_data_loader = DataLoader(        
         dataset=train_dataset,
-        batch_sampler=train_batch_sampler,
-        collate_fn=collator,
-        return_list=True)
-    eval_file_path = os.path.join(args.data_path, 'dev_data.json')
-    dev_dataset = DuIEDataset.from_file(eval_file_path,
+        #batch_sampler=train_batch_sampler,
+        batch_size=args.batch_size,
+        collate_fn=collator, # 这里百度baseline。 这里我重写了一个 collator
+        )
+    
+    dev_file_path = os.path.join(args.data_path, 'dev_data_200.json')
+    dev_dataset = SubjectDataset.from_file(dev_file_path,
                                          tokenizer,
                                          args.max_seq_length,
                                          True
                                          )
-                                    
-    dev_batch_sampler = t.io.BatchSampler(
-        dev_dataset, batch_size=args.batch_size, shuffle=False, drop_last=True)
+        
     dev_data_loader = DataLoader(
         dataset=dev_dataset,
-        batch_sampler=dev_batch_sampler,
-        collate_fn=collator,
-        return_list=True)
-
-    # Defines learning rate strategy.
-    steps_by_epoch = len(train_data_loader)
-    num_training_steps = steps_by_epoch * args.num_train_epochs
-    lr_scheduler = LinearDecayWithWarmup(args.learning_rate, num_training_steps,
-                                         args.warmup_ratio)
-    
+        batch_size= args.batch_size,
+        #batch_sampler=dev_batch_sampler,
+        collate_fn=collator,   
+    )
     
     # 这里为什么只对一部分的参数做这个decay 操作？ 这个decay 操作有什么作用？
     # Generate parameter names needed to perform weight decay.
     # All bias and LayerNorm parameters are excluded.
     decay_params = [
-        p.name for n, p in model.named_parameters()
+        p.name for n, p in model_subject.named_parameters()
         if not any(nd in n for nd in ["bias", "norm"])
     ]
-    optimizer = t.optimizer.Adam(
-        learning_rate=lr_scheduler,
-        parameters=model.parameters(),
+    optimizer = t.optim.AdamW(
+        params=model_subject.parameters(),
         weight_decay=args.weight_decay,
-        apply_decay_param_fun=lambda x: x in decay_params) # ？
+        #apply_decay_param_fun=lambda x: x in decay_params
+        ) 
+
+    # Defines learning rate strategy.
+    steps_by_epoch = len(train_data_loader)
+    num_training_steps = steps_by_epoch * args.num_train_epochs    
+    lr_scheduler = ReduceLROnPlateau(optimizer=optimizer,
+                                     mode='min')
+
 
     # Starts training.
     global_step = 0
@@ -243,61 +252,67 @@ def do_train():
         print("\n=====start training of %d epochs=====" % epoch)
         tic_epoch = time.time()
         # 设置为训练模式
-        model.train()
+        model_subject.train()
         for step, batch in enumerate(train_data_loader):
-            input_ids, seq_lens, tok_to_orig_start_index, tok_to_orig_end_index, labels = batch
-            logits = model(input_ids=input_ids)
-            mask = (input_ids != 0).logical_and((input_ids != 1)).logical_and(
-                (input_ids != 2))
-            loss = criterion(logits, labels, mask)
+            input_ids,token_type_ids,attention_mask, seq_lens, labels = batch
+            # labels size = [batch_size,max_seq_length]
+            logits = model_subject(input_ids=input_ids,
+                                   token_type_ids=token_type_ids,
+                                   attention_mask=attention_mask
+                                   )
+            #logits size [batch_size,max_seq_len,class_num]
+            logits = logits.view(-1,subject_class_num) 
+            labels = labels.view(-1)            
+            loss = criterion(logits, labels)
             loss.backward()
             optimizer.step()
-            lr_scheduler.step()
-            optimizer.clear_grad()
-            loss_item = loss.numpy().item()
+            #lr_scheduler.step()
+            optimizer.zero_grad()
+            loss_item = loss.item()
 
-            if global_step % logging_steps == 0 and t.distributed.get_rank(
-            ) == 0:
+            if global_step % logging_steps == 0 :
                 print(
                     "epoch: %d / %d, steps: %d / %d, loss: %f, speed: %.2f step/s"
                     % (epoch, args.num_train_epochs, step, steps_by_epoch,
                        loss_item, logging_steps / (time.time() - tic_train)))
                 tic_train = time.time()
 
-            if global_step % save_steps == 0 and global_step != 0 and t.distributed.get_rank(
-            ) == 0:
+            if global_step % save_steps == 0 and global_step != 0 :
                 print("\n=====start evaluating ckpt of %d steps=====" %
                       global_step)
                 precision, recall, f1 = evaluate(
-                    model, criterion, dev_data_loader, eval_file_path, "eval")
+                    model_subject, criterion, dev_data_loader, dev_file_path, "eval")
                 print("precision: %.2f\t recall: %.2f\t f1: %.2f\t" %
                       (100 * precision, 100 * recall, 100 * f1))
                 if (not args.n_gpu > 1) or t.distributed.get_rank() == 0:
-                    print("saving checkpoing model_%d.pdparams to %s " %
+                    print("saving checkpoing model_subject_%d.pdparams to %s " %
                           (global_step, args.output_dir))
-                    t.save(model.state_dict(),
+                    t.save(model_subject.state_dict(),
                                 os.path.join(args.output_dir,
-                                             "model_%d.pdparams" % global_step))
-                model.train()  # back to train mode
+                                             "model_subject_%d.pdparams" % global_step))
+                model_subject.train()  # back to train mode
 
             global_step += 1
         tic_epoch = time.time() - tic_epoch
         print("epoch time footprint: %d hour %d min %d sec" %
               (tic_epoch // 3600, (tic_epoch % 3600) // 60, tic_epoch % 60))
 
-    # Does final evaluation.
-    if t.distributed.get_rank() == 0:
-        print("\n=====start evaluating last ckpt of %d steps=====" %
-              global_step)
-        precision, recall, f1 = evaluate(model, criterion, dev_data_loader,
-                                         eval_file_path, "eval")
-        print("precision: %.2f\t recall: %.2f\t f1: %.2f\t" %
-              (100 * precision, 100 * recall, 100 * f1))
-        if (not args.n_gpu > 1) or t.distributed.get_rank() == 0:
-            t.save(model.state_dict(),
-                        os.path.join(args.output_dir,
-                                     "model_%d.pdparams" % global_step))
-        print("\n=====training complete=====")
+    # Does final evaluation.    
+    print("\n=====start evaluating last ckpt of %d steps=====" %
+            global_step)
+    precision, recall, f1 = evaluate(model_subject, 
+                                     criterion,
+                                     dev_data_loader,
+                                     dev_file_path,
+                                     "eval")
+    print("precision: %.2f\t recall: %.2f\t f1: %.2f\t" %
+            (100 * precision, 100 * recall, 100 * f1))
+    
+    t.save(model_subject.state_dict(),
+           os.path.join(args.output_dir,
+                        "model_subject_%d.pdparams" % global_step)
+           )
+    print("\n=====training complete=====")
 
 
 def do_predict():
@@ -309,8 +324,8 @@ def do_predict():
         label_map = json.load(fp)
     num_classes = (len(label_map.keys()) - 2) * 2 + 2
 
-    # Loads pretrained model ERNIE
-    model = BertForSequenceClassification.from_pretrained(
+    # Loads pretrained model_subject ERNIE
+    model_subject = BertForSequenceClassification.from_pretrained(
         "ernie-1.0", num_classes=num_classes)
     tokenizer = BertTokenizer.from_pretrained("ernie-1.0")
     criterion = BCELossForDuIE()
@@ -330,17 +345,17 @@ def do_predict():
         collate_fn=collator,
         return_list=True)
 
-    # Loads model parameters.
+    # Loads model_subject parameters.
     if not (os.path.exists(args.init_checkpoint) and
             os.path.isfile(args.init_checkpoint)):
         sys.exit("wrong directory: init checkpoints {} not exist".format(
             args.init_checkpoint))
     state_dict = t.load(args.init_checkpoint)
-    model.set_dict(state_dict)
+    model_subject.set_dict(state_dict)
 
     # Does predictions.
     print("\n=====start predicting=====")
-    evaluate(model,
+    evaluate(model_subject,
              criterion,
              test_data_loader,
              args.predict_data_file,
@@ -351,7 +366,7 @@ def do_predict():
 if __name__ == "__main__":
     set_random_seed(args.seed)
     # 指定GPU设备    
-    t.cuda.set_device("gpu" if args.n_gpu else "cpu")
+    device = t.device("cuda" if t.cuda.is_available() and not args.n_gpu else "cpu")    
 
     if args.do_train:        
         do_train()
