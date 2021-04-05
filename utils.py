@@ -17,7 +17,8 @@ import json
 import os
 import re
 import zipfile
-
+import torch as t
+from torch.nn import LogSoftmax
 import numpy as np
 
 
@@ -186,6 +187,67 @@ def get_precision_recall_f1(golden_file, predict_file):
             "\"f1-score\", \"value\":").rstrip("}"))
 
     return precision, recall, f1
+
+
+"""
+功能：由 预测subject的label 得到实体
+"""
+def decode_subject(labels,id2subject_map,input_ids,tokenizer):    
+    m = LogSoftmax(dim=-1)
+    a = m(labels)
+    batch_indexs = a.argmax(2) # 在该维度找出值最大的，就是预测出来的标签    
+    batch_subjects =[]
+    batch_labels = []
+    tokens = tokenizer.convert_ids_to_tokens(input_ids[0]) # 得到原字符串
+    for indexs in batch_indexs:
+        subjects = [] # 预测出最后的结果
+        labels = []
+        cur_subject = ""
+        for i,ind in enumerate(indexs):
+            if ind > 1 : # 说明是一个标签的开始
+                cur_subject+=tokens[i] 
+                cur_subject_label = id2subject_map[str(ind.item())]
+            if ind == 1 and cur_subject!="": # 说明是中间部分，且 cur_subject 不为空
+                cur_subject += tokens[i]
+            elif ind == 0 and cur_subject!="": # 将 cur_subject 放入到 subjects 中
+                subjects.append(cur_subject)
+                labels.append(cur_subject_label)
+                cur_subject = ""
+        batch_subjects.append(subjects)
+        batch_labels.append(labels)
+    # 然后再找出对应的内容
+    return batch_subjects,batch_labels
+
+
+"""
+功能：由 预测object 的labels 得到object
+"""
+def decode_object(labels,id2object_map,tokenizer,input_ids):
+    m = LogSoftmax(dim=-1)
+    a = m(labels)
+    batch_indexs = a.argmax(2) # 在该维度找出值最大的，就是预测出来的标签
+    batch_objects = [] # 预测出最后的结果
+    batch_labels = []
+    tokens = tokenizer.convert_ids_to_tokens(input_ids[0]) # 得到原字符串
+    for indexs in batch_indexs:
+        objects = []
+        labels = []
+        cur_object = ""
+        for i,ind in enumerate(indexs):
+            if ind > 1 : # 说明是一个标签的开始
+                cur_object+=tokens[i] 
+                cur_object_label = id2object_map[str(ind.item())]
+            if ind == 1 and cur_object!="": # 说明是中间部分，且 cur_subject 不为空
+                cur_object += tokens[i]
+            elif ind == 0 and cur_object!="": # 将 cur_subject 放入到 subjects 中
+                objects.append(cur_object)
+                labels.append(cur_object_label)
+                cur_object = ""
+        batch_objects.append(objects)
+        batch_labels.append(labels)
+    # 然后再找出对应的内容
+    return batch_objects,batch_labels
+
 
 
 if __name__ == "__main__":

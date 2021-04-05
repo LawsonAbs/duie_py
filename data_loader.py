@@ -385,7 +385,8 @@ def convert_example_to_object_feature(
         chineseandpunctuationextractor: ChineseAndPunctuationExtractor,
         subject_map,
         max_length: Optional[int]=512,
-        pad_to_max_length: Optional[bool]=None):
+        pad_to_max_length: Optional[bool]=None
+        ):
     spo_list = example['spo_list'] if "spo_list" in example.keys() else None
     text_raw = example['text']
 
@@ -642,8 +643,7 @@ class SubjectDataCollator:
     Collator for DuIE.
     """
     def __call__(self, examples):
-        batched_input_ids = np.stack([x['input_ids'] for x in examples])
-        seq_lens = np.stack([x['seq_lens'] for x in examples])
+        batched_input_ids = np.stack([x['input_ids'] for x in examples])        
         attention_mask = np.stack(
             [x['attention_mask'] for x in examples])
         token_typed_ids = np.stack(
@@ -652,11 +652,30 @@ class SubjectDataCollator:
         origin_info = np.stack(x['origin_info'] for x in examples)
         batched_input_ids = t.tensor(batched_input_ids).cuda()
         token_typed_ids = t.tensor(token_typed_ids).cuda()
-        attention_mask = t.tensor(attention_mask).cuda()
-        seq_lens = t.tensor(seq_lens).cuda()
+        attention_mask = t.tensor(attention_mask).cuda()        
         labels = t.tensor(labels).cuda()
 
-        return (batched_input_ids,token_typed_ids,attention_mask, seq_lens,labels,origin_info)
+        return (batched_input_ids,token_typed_ids,attention_mask, labels,origin_info)
+
+
+@dataclass
+class PredictSubjectDataCollator:
+    """
+    Collator for DuIE.
+    """
+    def __call__(self, examples):
+        batched_input_ids = np.stack([x['input_ids'] for x in examples])        
+        attention_mask = np.stack(
+            [x['attention_mask'] for x in examples])
+        token_typed_ids = np.stack(
+            [x['token_type_ids'] for x in examples])
+        
+        origin_info = np.stack(x['origin_info'] for x in examples)
+        batched_input_ids = t.tensor(batched_input_ids).cuda()
+        token_typed_ids = t.tensor(token_typed_ids).cuda()
+        attention_mask = t.tensor(attention_mask).cuda()        
+
+        return (batched_input_ids,token_typed_ids,attention_mask, origin_info)
 
 
 """
@@ -749,46 +768,138 @@ class SubjectDataset(Dataset):
 
 
 """
+功能：这部分数据的加载 是为了预测 subject 
+"""
+class PredictSubjectDataset(Dataset):    
+    def __init__(
+            self, 
+            input_ids ,
+            token_type_ids ,
+            attention_mask,
+            origin_info
+            ):
+        super(PredictSubjectDataset, self).__init__()
+
+        self.input_ids = input_ids        
+        self.token_type_ids = token_type_ids
+        self.attention_mask = attention_mask
+        self.origin_info = origin_info
+
+    def __len__(self):
+        if isinstance(self.input_ids, np.ndarray):
+            return self.input_ids.shape[0]
+        else:
+            return len(self.input_ids)
+
+    def __getitem__(self, item):
+        return {
+            "input_ids": np.array(self.input_ids[item]),
+            "token_type_ids":np.array(self.token_type_ids[item]),
+            "attention_mask":np.array(self.attention_mask[item]),
+            "origin_info":self.origin_info[item]     
+        }
+    
+    @classmethod
+    def from_file(cls,
+                  file_path: Union[str, os.PathLike],
+                  tokenizer: BertTokenizer,
+                  max_length: Optional[int]=512,
+                  pad_to_max_length: Optional[bool]=None
+                  ):
+                  
+        assert os.path.exists(file_path) and os.path.isfile(
+            file_path), f"{file_path} dose not exists or is not a file."
+        subject_map_path = os.path.join(
+            os.path.dirname(file_path), "subject2id.json")
+        assert os.path.exists(subject_map_path) and os.path.isfile(
+            subject_map_path
+        ), f"{subject_map_path} dose not exists or is not a file."
+        with open(subject_map_path, 'r', encoding='utf8') as fp:
+            subject_map = json.load(fp)
+        chineseandpunctuationextractor = ChineseAndPunctuationExtractor()
+
+        # 初始化赋空值
+        input_ids, seq_lens, attention_mask, token_type_ids, labels = (
+            [] for _ in range(5))
+        origin_info = [] # 原始文本信息        
+        print(f"Preprocessing data, loaded from %s" % file_path)
+        with open(file_path, "r", encoding="utf-8") as fp:
+            lines = fp.readlines()
+            for line in tqdm(lines):
+                example = json.loads(line)
+                input_feature = convert_example_to_subject_feature(
+                    example, tokenizer, chineseandpunctuationextractor,
+                    subject_map, max_length, pad_to_max_length)
+                
+                # 得到所有的训练数据
+                input_ids.append(input_feature.input_ids)
+                seq_lens.append(input_feature.seq_len)                
+                token_type_ids.append(input_feature.token_type_ids)
+                attention_mask.append(input_feature.attention_mask)
+                origin_info.append(example)
+        
+        examples = cls(input_ids,
+                       token_type_ids=token_type_ids,
+                       attention_mask=attention_mask,
+                       origin_info=origin_info                 
+                       )
+        return examples
+
+
+
+
+"""
 功能：将 example 中的 text 文本前添加 subject + ['SEP'] 得到examples
 """
-def process_example(example):
+def process_example(example,batch_subjects):
     examples = []
     spo_list = example['spo_list'] if "spo_list" in example.keys() else None
     text_raw = example['text']
-    subjects = []
-
-    for spo in spo_list:
-        subject = spo['subject']  # dict
-        subjects.append(subject)
-    
-    for subject in subjects:
-        # TODO 这里使用什么字符分割，也是一个待研究
-        text = subject +'。'+ text_raw
-        cur_example = {"spo_list":spo_list,"text":text}
-        examples.append(cur_example)
+    # 如果subjects 为None，那么我们自己手动生成，否则就用传入的subjects
+    if batch_subjects is None:
+        subjects = []
+        for spo in spo_list:
+            subject = spo['subject']  # dict
+            subjects.append(subject)
+        for subject in subjects:
+                text = subject +'。'+ text_raw
+                cur_example = {"spo_list":spo_list,"text":text}
+                examples.append(cur_example)
+    else:
+        for subjects in batch_subjects:
+            # TODO 这里使用什么字符分割，也是一个待研究
+            for subject in subjects:
+                text = subject +'。'+ text_raw
+                cur_example = {"spo_list":spo_list,"text":text}
+                examples.append(cur_example)
     return examples
 
 
 """
 功能：将 example 中的 text 文本前添加 subject + '。' + object + '。'  得到examples
 """
-def process_example_relation(example):
+def process_example_relation(batch_subjects,objects,example):
     examples = []
-    spo_list = example['spo_list'] if "spo_list" in example.keys() else None
-    text_raw = example['text']    
-    objects = []
-    
-    # 每一条 spo 都会产生一个样本
-    for spo in spo_list:
-        subject = spo['subject']  # dict
-        object_val = list(spo['object'].values())
-        object_val = "。".join(object_val) + "。"        
-        text = subject + '。' + object_val + text_raw
-        cur_example = {"spo_list":spo,"text":text}
-        examples.append(cur_example)
-        
-    return examples
+    text_raw = example['text']
 
+    if batch_subjects is None and objects is None:
+        spo_list = example['spo_list'] if "spo_list" in example.keys() else None        
+        
+        # 每一条 spo 都会产生一个样本
+        for spo in spo_list:
+            subject = spo['subject']  # dict
+            object_val = list(spo['object'].values())
+            object_val = "。".join(object_val) + "。"        
+            text = subject + '。' + object_val + text_raw
+            cur_example = {"spo_list":spo,"text":text}
+            examples.append(cur_example)
+    
+    else: # 这是个挺复杂的工作，因为subjects 和 objects 的值不是一一对应的
+        batch_subjects.squeeze_() # 首先给压平
+        for subject in batch_subjects: # 找到每一个                
+                obj = objects[i]
+                text = subject + '。' + obj + text_raw
+    return examples
 
 
 '''
@@ -825,8 +936,7 @@ class ObjectDataset(Dataset):
     
     @classmethod
     def from_dict(cls,
-                  batch_origin_dict,
-                #   object_file_path: Union[str, os.PathLike],
+                  batch_origin_dict,                
                   tokenizer: BertTokenizer,
                   max_length: Optional[int] = 512,
                   pad_to_max_length: Optional[bool]=None
@@ -843,7 +953,7 @@ class ObjectDataset(Dataset):
         for example in batch_origin_dict:                
             # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条                
             # 先预处理，将一个example 变成(在其前追加subject+['SEP'])变为多个 example
-            examples = process_example(example)
+            examples = process_example(example,subjects=None)
             for example in examples:
                 input_feature = convert_example_to_object_feature(
                     example, tokenizer, chineseandpunctuationextractor,
@@ -865,7 +975,8 @@ class ObjectDataset(Dataset):
         return object_dataset
 
 
-def from_dict(batch_origin_dict,              
+def from_dict(subjects,
+              batch_origin_dict,              
               tokenizer: BertTokenizer,
               max_length: Optional[int] = 512,
               pad_to_max_length: Optional[bool] = None
@@ -878,11 +989,11 @@ def from_dict(batch_origin_dict,
     # 初始化赋空值
     input_ids, attention_mask, token_type_ids, labels = (
         [] for _ in range(4))
-            
-    for example in batch_origin_dict:                
+    # batch_origin_dict 是原数据 [{},{} ... {}]
+    for example in batch_origin_dict:      
         # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条                
         # 先预处理，将一个example 变成(在其前追加subject+['SEP'])变为多个 example
-        examples = process_example(example)
+        examples = process_example(example,subjects)
         for example in examples:
             input_feature = convert_example_to_object_feature(
                 example, tokenizer, chineseandpunctuationextractor,
@@ -900,9 +1011,11 @@ def from_dict(batch_origin_dict,
 根据dict得到relation 的数据
 batch_origin_dict [{},{}...{}]
 """
-def from_dict2_relation(batch_origin_dict,              
+def from_dict2_relation(subjects,
+              objects,
+              batch_origin_info,#[{...},{...}...{}]  
               tokenizer: BertTokenizer,
-              max_length: Optional[int] = 512,              
+              max_length: Optional[int] = 512,                            
               ):
 
     with open("./data/relation2id.json", 'r', encoding='utf8') as fp:
@@ -912,11 +1025,45 @@ def from_dict2_relation(batch_origin_dict,
     # 初始化赋空值
     input_ids, attention_mask, token_type_ids, labels = (
         [] for _ in range(4))
-            
-    for example in batch_origin_dict:                
+    
+    
+    
+    ''' example 中的是数据格式如下：
+    {
+    "text": "古往今来，能饰演古龙小说人物“楚留香”的，无一不是娱乐圈公认的美男子，2011年，36岁的张智尧在《楚留香新传》里饰演楚留香，依旧帅得让人无法自拔",
+    "spo_list": [
+        {
+            "predicate": "主演",
+            "object_type": {
+                "@value": "人物"
+            },
+            "subject_type": "影视作品",
+            "object": {
+                "@value": "张智尧"
+            },
+            "subject": "楚留香新传"
+        },
+        {
+            "predicate": "饰演",
+            "object_type": {
+                "inWork": "影视作品",
+                "@value": "人物"
+            },
+            "subject_type": "娱乐人物",
+            "object": {
+                "inWork": "楚留香新传",
+                "@value": "楚留香"
+            },
+            "subject": "张智尧"
+        }
+    ]
+    }
+    '''
+    for example in batch_origin_info:
         # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条                
         # 先预处理，将一个example 变成(在其前追加subject+['SEP'])变为多个 example
-        examples = process_example_relation(example)
+        examples = process_example_relation(subjects,objects,example)
+        # 紧接着处理每个example
         for example in examples:
             input_feature = convert_example_to_relation_feature(
                 example, tokenizer, chineseandpunctuationextractor,
