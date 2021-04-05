@@ -1,0 +1,63 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "duie_train",
+            "type": "python",
+            "request": "launch",
+            "program": "run_duie.py",
+            "console": "integratedTerminal",
+            "env": {"CUDA_VISIBLE_DEVICES":"0"},
+            "args": ["--do_train",
+                "--n_gpu", "1",
+                "--seed", "42",       
+                "--data_path","./data",
+                "--max_seq_length", "128",
+                "--batch_size", "1",
+                "--num_train_epochs","12",
+                "--learning_rate","1e-3",
+                "--warmup_ratio", "0.06",
+                "--weight_decay","1e-2",
+                //"--init_checkpoint","./checkpoints/model_40000.pdparams",
+                "--output_dir", "./checkpoints"]
+        },
+        {
+            "name": "data_loader",
+            "type": "python",
+            "request": "launch",
+            "program": "data_loader.py",
+            "console": "integratedTerminal"         
+        },
+        {
+            "name": "utils",
+            "type": "python",
+            "request": "launch",
+            "program": "utils.py",
+            "console": "integratedTerminal"         
+        },
+        {
+            "name": "re_official_evaluation",
+            "type": "python",
+            "request": "launch",
+            "program": "re_official_evaluation.py",
+            "console": "integratedTerminal",
+            "args": ["--golden_file","./data/dev_data.json",
+                    "--predict_file","./data/predict_eval.json.zip"]
+        },
+        {
+            "name": "duie_predict",
+            "type": "python",
+            "request": "launch",
+            "program": "run_duie.py",
+            "console": "integratedTerminal",
+            "args": ["--do_predict",                                
+                "--predict_data_file","./data/dev_data_200.json",
+                "--max_seq_length", "128",
+                "--batch_size", "1",
+            ]
+        }
+    ]
+}
