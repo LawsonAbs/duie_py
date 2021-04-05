@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from models import SubjectModel
+from models import RelationModel, SubjectModel,ObjectModel
 import logging
 import argparse
 import os
@@ -38,10 +38,11 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from transformers import BertTokenizer, BertForSequenceClassification
 from transformers.utils.dummy_pt_objects import BertModel
 
-from data_loader import DuIEDataset, DataCollator,SubjectDataset,SubjectDataCollator
+from data_loader import DuIEDataset, DataCollator, ObjectDataset,SubjectDataset,SubjectDataCollator
 from utils import decoding, find_entity, get_precision_recall_f1, write_prediction_results
 
-# yapf: disable
+from data_loader import from_dict,from_dict2_relation
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--do_train", action='store_true', default=False, help="do train")
 parser.add_argument("--do_predict", action='store_true', default=False, help="do predict")
@@ -181,15 +182,14 @@ def do_train():
     # 这一部分我用一个 NER 任务来做，但是原任务用的是 start + end 的方式，原理是一样的
     # ========================== =================== ==========================        
     name_or_path = "/home/lawson/pretrain/bert-base-chinese"
-    model_subject = SubjectModel(name_or_path,768,out_fea=subject_class_num)
-    #model_object = ObjectModel(name_or_path)
+    model_subject = SubjectModel(name_or_path,768,out_fea=subject_class_num)    
     model_subject = model_subject.cuda()
     tokenizer = BertTokenizer.from_pretrained("/home/lawson/pretrain/bert-base-chinese")
     criterion = nn.CrossEntropyLoss() # 使用交叉熵计算损失
 
     # Loads dataset.
     train_dataset = SubjectDataset.from_file(
-        os.path.join(args.data_path, 'train_data_100.json'),
+        os.path.join(args.data_path, 'train_data.json'),
         tokenizer,
         args.max_seq_length,
         True
@@ -206,7 +206,7 @@ def do_train():
         dataset=train_dataset,
         #batch_sampler=train_batch_sampler,
         batch_size=args.batch_size,
-        collate_fn=collator, # 这里百度baseline。 这里我重写了一个 collator
+        collate_fn=collator, # 重写一个 collator
         )
     
     dev_file_path = os.path.join(args.data_path, 'dev_data_200.json')
@@ -242,7 +242,12 @@ def do_train():
     lr_scheduler = ReduceLROnPlateau(optimizer=optimizer,
                                      mode='min')
 
+        
+    model_object = ObjectModel(name_or_path,768,object_class_num)        
+    model_object = model_object.cuda()
 
+    model_relation = RelationModel(name_or_path,768,relation_class_num)
+    model_relation = model_relation.cuda()
     # Starts training.
     global_step = 0
     logging_steps = 50
@@ -254,16 +259,57 @@ def do_train():
         # 设置为训练模式
         model_subject.train()
         for step, batch in enumerate(train_data_loader):
-            input_ids,token_type_ids,attention_mask, seq_lens, labels = batch
+            input_ids,token_type_ids,attention_mask, seq_lens, labels,origin_info = batch
             # labels size = [batch_size,max_seq_length]
-            logits = model_subject(input_ids=input_ids,
+            logits_1 = model_subject(input_ids=input_ids,
                                    token_type_ids=token_type_ids,
                                    attention_mask=attention_mask
                                    )
             #logits size [batch_size,max_seq_len,class_num]
-            logits = logits.view(-1,subject_class_num) 
-            labels = labels.view(-1)            
-            loss = criterion(logits, labels)
+            logits_1 = logits_1.view(-1,subject_class_num) 
+            labels = labels.view(-1)  
+            loss_1 = criterion(logits_1, labels)
+            
+            # ====== 根据origin_info 得到 subtask 2 的训练数据 ==========
+            # 这里的object_input_ids 的size 不再是args.batch_size ，可能比这个稍大
+            object_input_ids, object_token_type_ids,object_attention_mask, object_labels = from_dict(origin_info,
+                                                             tokenizer,
+                                                             args.max_seq_length,
+                                                             True
+                                                             )
+            object_input_ids = t.tensor(object_input_ids).cuda()
+            object_token_type_ids = t.tensor(object_token_type_ids).cuda()
+            object_attention_mask = t.tensor(object_attention_mask).cuda()            
+            object_labels = t.tensor(object_labels).cuda()
+            logits_2 = model_object(input_ids = object_input_ids,
+                                    token_type_ids=object_token_type_ids,
+                                    attention_mask=object_attention_mask
+                                    )            
+            logits_2 = logits_2.view(-1,object_class_num) 
+            object_labels = object_labels.view(-1)  
+            loss_2 = criterion(logits_2,object_labels)
+            
+            # ====== 根据origin_info 得到 subtask 3 的训练数据 ==========
+            # 根据 subject + object 预测 关系
+            relation_input_ids, relation_token_type_ids, relation_attention_mask, relation_labels = from_dict2_relation(origin_info,
+                                                                 tokenizer,
+                                                                 args.max_seq_length,
+                                                                 )
+            
+            relation_input_ids = t.tensor(relation_input_ids).cuda()
+            relation_token_type_ids = t.tensor(relation_token_type_ids).cuda()
+            relation_attention_mask = t.tensor(relation_attention_mask).cuda()
+            relation_labels = t.tensor(relation_labels).cuda()
+
+            # 这个模型直接得到loss
+            out = model_relation(input_ids=relation_input_ids,
+                                 token_type_ids=relation_token_type_ids,
+                                 attention_mask=relation_attention_mask,
+                                 labels = relation_labels
+                                 )
+            
+            loss_3 = out.loss
+            loss = loss_1 + loss_2 + loss_3
             loss.backward()
             optimizer.step()
             #lr_scheduler.step()
@@ -276,7 +322,7 @@ def do_train():
                     % (epoch, args.num_train_epochs, step, steps_by_epoch,
                        loss_item, logging_steps / (time.time() - tic_train)))
                 tic_train = time.time()
-
+            '''
             if global_step % save_steps == 0 and global_step != 0 :
                 print("\n=====start evaluating ckpt of %d steps=====" %
                       global_step)
@@ -291,12 +337,13 @@ def do_train():
                                 os.path.join(args.output_dir,
                                              "model_subject_%d.pdparams" % global_step))
                 model_subject.train()  # back to train mode
-
+            '''     
             global_step += 1
-        tic_epoch = time.time() - tic_epoch
-        print("epoch time footprint: %d hour %d min %d sec" %
-              (tic_epoch // 3600, (tic_epoch % 3600) // 60, tic_epoch % 60))
+        # tic_epoch = time.time() - tic_epoch
+        # print("epoch time footprint: %d hour %d min %d sec" %
+        #       (tic_epoch // 3600, (tic_epoch % 3600) // 60, tic_epoch % 60))
 
+    '''
     # Does final evaluation.    
     print("\n=====start evaluating last ckpt of %d steps=====" %
             global_step)
@@ -307,7 +354,7 @@ def do_train():
                                      "eval")
     print("precision: %.2f\t recall: %.2f\t f1: %.2f\t" %
             (100 * precision, 100 * recall, 100 * f1))
-    
+    '''
     t.save(model_subject.state_dict(),
            os.path.join(args.output_dir,
                         "model_subject_%d.pdparams" % global_step)

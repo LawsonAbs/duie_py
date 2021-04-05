@@ -14,12 +14,15 @@
 
 import collections
 import json
+import logging
 import os
-from typing import Optional, List, Union, Dict
+from re import sub
+from typing import Optional, List, Union, Dict, get_origin
 from dataclasses import dataclass
 
 import numpy as np
-import torch
+import torch as t
+from torch.utils.data import Dataset,DataLoader
 from tqdm import tqdm
 from transformers import BertTokenizer
 
@@ -30,6 +33,21 @@ InputFeature = collections.namedtuple("InputFeature", [
     "input_ids", "seq_len", "tok_to_orig_start_index", "tok_to_orig_end_index",
     "labels"
 ])
+
+SubjectInputFeature = collections.namedtuple("SubjectInputFeature", [
+    "input_ids","token_type_ids","attention_mask","seq_len", "labels"
+])
+
+
+ObjectInputFeature = collections.namedtuple("ObjectInputFeature", [
+    "input_ids","token_type_ids","attention_mask","seq_len", "labels"
+])
+
+# TODO：弄清楚这里的语法是什么
+RelationInputFeature = collections.namedtuple("RelationInputFeature", [
+    "input_ids","token_type_ids","attention_mask","label"
+])
+
 
 
 def parse_label(spo_list, label_map, tokens, tokenizer):
@@ -120,6 +138,77 @@ def parse_label(spo_list, label_map, tokens, tokenizer):
     return labels
 
 
+
+'''
+功能：获取subtask 1 中的label
+01. 这个 subtask 1 就是一个普通的 NER任务
+subject_map：
+'''
+def parse_subject_label(spo_list, subject_map, tokens, tokenizer):
+    # 2 tags for each predicate + I tag + O tag    
+    seq_len = len(tokens)
+    # initialize tag
+    labels = [0 for i in range(seq_len)]
+    #  find all entities and tag them with corresponding "B"/"I" labels
+    for spo in spo_list:
+        subject_val = spo['subject']  # 邪少兵王
+        subject_val_tokens = tokenizer.tokenize(subject_val)
+        subject_len = len(subject_val_tokens)
+        subject_type = spo['subject_type']
+        
+        # 遍历找出下标
+        # TODO:这里其实存在一个问题，就是如果subject 在text中多次出现，那么该怎么办？
+        for i,word in enumerate(tokens): 
+            if tokens[i:i+subject_len] == subject_val_tokens:
+                labels[i] = subject_map[subject_type] # 'B_图书作品'
+                for j in range(i+1,i+subject_len):
+                    labels[j] = 1 # 'I'
+                break
+    return labels
+
+
+'''
+功能：解析object 的label。这个函数的目的是为了找到object 值的label
+'''
+def parse_object_label(spo_list, object_map, tokens, tokenizer):    
+    seq_len = len(tokens)
+    # initialize tag
+    labels = [0 for i in range(seq_len)]
+    #  find all entities and tag them with corresponding "B"/"I" labels
+    for spo in spo_list:
+        object_vals = list(spo['object'].values())
+        # 因为object_type 中的内容可能是复杂的结构，所以这里是 object_type_vals
+        object_type_vals = list(spo['object_type'].values())
+        object_val_tokens = []
+        
+        for object_val in object_vals:
+            object_val_tokens.append(tokenizer.tokenize(object_val))
+        
+        # 找出有几个object
+        for i,cur_object_type in enumerate(object_type_vals):
+            cur_object_len = len(object_val_tokens[i])
+            cur_object_val = object_val_tokens[i]
+            for j,word in enumerate(tokens):                 
+                if tokens[j:j+cur_object_len] == cur_object_val:
+                    labels[j] = object_map[cur_object_type]
+                    for k in range(j+1,j+cur_object_len):
+                        labels[k] = 1 # 'I'
+                    break
+    return labels
+
+
+'''
+功能：解析 relation 的label。这个函数的目的是为了找到object 值的label
+'''
+def parse_relation_label(spo_list, relation_map):
+    # initialize tag
+    label = 0 # 默认分类为零
+    # 再用这个做一个简单的分类就可以了，所以这里的lable就是一个数字    
+    relation_vals = spo_list['predicate']
+    label = relation_map[relation_vals]
+    return label
+
+
 def convert_example_to_feature(
         example,
         tokenizer:BertTokenizer,
@@ -198,10 +287,246 @@ def convert_example_to_feature(
         seq_len=np.array(seq_len),
         tok_to_orig_start_index=np.array(tok_to_orig_start_index),
         tok_to_orig_end_index=np.array(tok_to_orig_end_index),
-        labels=np.array(labels), )
+        labels=np.array(labels)
+        )
 
 
-class DuIEDataset(torch.io.Dataset):
+"""
+功能：获取subject 任务的feature
+"""
+def convert_example_to_subject_feature(
+        example,
+        tokenizer:BertTokenizer,
+        chineseandpunctuationextractor: ChineseAndPunctuationExtractor,
+        subject_map,
+        max_length: Optional[int]=512,
+        pad_to_max_length: Optional[bool]=None):
+    spo_list = example['spo_list'] if "spo_list" in example.keys() else None
+    text_raw = example['text']
+
+    sub_text = []
+    buff = ""
+    for char in text_raw:
+        if chineseandpunctuationextractor.is_chinese_or_punct(char):
+            if buff != "":
+                sub_text.append(buff)
+                buff = ""
+            sub_text.append(char)
+        else:
+            buff += char
+    if buff != "":
+        sub_text.append(buff)
+
+    tok_to_orig_start_index = []
+    tok_to_orig_end_index = []
+    orig_to_tok_index = []
+    tokens = []
+    text_tmp = ''    
+    for (i, token) in enumerate(sub_text):
+        orig_to_tok_index.append(len(tokens))
+        sub_tokens = tokenizer._tokenize(token)
+        text_tmp += token
+        for sub_token in sub_tokens:
+            tok_to_orig_start_index.append(len(text_tmp) - len(token))
+            tok_to_orig_end_index.append(len(text_tmp) - 1)
+            tokens.append(sub_token)
+            if len(tokens) >= max_length - 2:
+                break
+        else:
+            continue
+        break
+
+    seq_len = len(tokens)
+    token_type_ids = [0] * seq_len
+    attention_mask = [1] * seq_len    
+    # initialize tag
+    # 这里的labels 就是一个一维数组
+    labels = [0 for i in range(seq_len)] 
+    if spo_list is not None: 
+        labels = parse_subject_label(spo_list, subject_map, tokens, tokenizer)
+
+    # add [CLS] and [SEP] token, they are tagged into "O" for outside
+    if seq_len > max_length - 2: # 这里的逻辑就是：如果seq_len 超过了最大长度，就截断
+        tokens = tokens[0:(max_length - 2)]
+        labels = labels[0:(max_length - 2)]
+        token_type_ids = token_type_ids[0:max_length ] # 因为不用补充，所以不用减2
+        attention_mask = attention_mask[0:max_length ]
+
+    tokens = ["[CLS]"] + tokens + ["[SEP]"]
+    # "O" tag for [PAD], [CLS], [SEP] token    
+    labels = [0] + labels + [0]
+    token_type_ids = [0] + token_type_ids + [0]
+    attention_mask = [1] + attention_mask + [1]
+    # 如果长度不够，则调整
+    while (len(tokens) < max_length ):
+        tokens.append("[PAD]") # 追加
+        labels.append(0)
+        token_type_ids.append(0)
+        attention_mask.append(0) 
+    token_ids = tokenizer.convert_tokens_to_ids(tokens)
+
+    # 为什么这里喜欢用np.array?
+    return SubjectInputFeature(
+        input_ids=np.array(token_ids),
+        token_type_ids = np.array(token_type_ids),
+        attention_mask = np.array(attention_mask),
+        seq_len=np.array(seq_len),
+        labels=np.array(labels),
+
+        )
+
+
+"""
+功能：获取object 任务的feature
+"""
+def convert_example_to_object_feature(
+        example,
+        tokenizer:BertTokenizer,
+        chineseandpunctuationextractor: ChineseAndPunctuationExtractor,
+        subject_map,
+        max_length: Optional[int]=512,
+        pad_to_max_length: Optional[bool]=None):
+    spo_list = example['spo_list'] if "spo_list" in example.keys() else None
+    text_raw = example['text']
+
+    sub_text = []
+    buff = ""
+    for char in text_raw:
+        if chineseandpunctuationextractor.is_chinese_or_punct(char):
+            if buff != "":
+                sub_text.append(buff)
+                buff = ""
+            sub_text.append(char)
+        else:
+            buff += char
+    if buff != "":
+        sub_text.append(buff)
+    
+    tokens = []
+    text_tmp = ''    
+    for (i, token) in enumerate(sub_text):
+        sub_tokens = tokenizer._tokenize(token)
+        text_tmp += token
+        for sub_token in sub_tokens:
+            tokens.append(sub_token)
+            if len(tokens) >= max_length - 2:
+                break
+        else:
+            continue
+        break
+
+    seq_len = len(tokens)
+    token_type_ids = [0] * seq_len
+    attention_mask = [1] * seq_len    
+    # initialize tag
+    # 这里的labels 就是一个一维数组
+    labels = [0 for i in range(seq_len)] 
+    if spo_list is not None: 
+        labels = parse_object_label(spo_list, subject_map, tokens, tokenizer)
+
+    # add [CLS] and [SEP] token, they are tagged into "O" for outside
+    if seq_len > max_length - 2: # 这里的逻辑就是：如果seq_len 超过了最大长度，就截断
+        tokens = tokens[0:(max_length - 2)]
+        labels = labels[0:(max_length - 2)]
+        token_type_ids = token_type_ids[0:max_length ] # 因为不用补充，所以不用减2
+        attention_mask = attention_mask[0:max_length ]
+
+    tokens = ["[CLS]"] + tokens + ["[SEP]"]
+    # "O" tag for [PAD], [CLS], [SEP] token    
+    labels = [0] + labels + [0]
+    token_type_ids = [0] + token_type_ids + [0]
+    attention_mask = [1] + attention_mask + [1]
+    # 如果长度不够，则调整
+    while (len(tokens) < max_length ):
+        tokens.append("[PAD]") # 追加
+        labels.append(0)
+        token_type_ids.append(0)
+        attention_mask.append(0) 
+    token_ids = tokenizer.convert_tokens_to_ids(tokens)
+    
+    return ObjectInputFeature(
+        input_ids=np.array(token_ids),
+        token_type_ids = np.array(token_type_ids),
+        attention_mask = np.array(attention_mask),
+        seq_len=np.array(seq_len),
+        labels=np.array(labels)
+        )
+
+
+
+def convert_example_to_relation_feature(
+        example,
+        tokenizer:BertTokenizer,
+        chineseandpunctuationextractor: ChineseAndPunctuationExtractor,
+        relation_map,
+        max_length: Optional[int]=512,        
+        ):
+    spo_list = example['spo_list'] if "spo_list" in example.keys() else None
+    text_raw = example['text']
+
+    sub_text = []
+    buff = ""
+    for char in text_raw:
+        if chineseandpunctuationextractor.is_chinese_or_punct(char):
+            if buff != "":
+                sub_text.append(buff)
+                buff = ""
+            sub_text.append(char)
+        else:
+            buff += char
+    if buff != "":
+        sub_text.append(buff)
+    
+    tokens = []
+    text_tmp = ''    
+    for (i, token) in enumerate(sub_text):
+        sub_tokens = tokenizer._tokenize(token)
+        text_tmp += token
+        for sub_token in sub_tokens:
+            tokens.append(sub_token)
+            if len(tokens) >= max_length - 2:
+                break
+        else:
+            continue
+        break
+
+    seq_len = len(tokens)
+    token_type_ids = [0] * seq_len
+    attention_mask = [1] * seq_len    
+    # initialize tag
+    # 这里的labels 就是一个一维数组
+    label = [0 for i in range(seq_len)]
+    if spo_list is not None: 
+        label = parse_relation_label(spo_list, relation_map)
+
+    # add [CLS] and [SEP] token, they are tagged into "O" for outside
+    if seq_len > max_length - 2: # 这里的逻辑就是：如果seq_len 超过了最大长度，就截断
+        tokens = tokens[0:(max_length - 2)]        
+        token_type_ids = token_type_ids[0:max_length ] # 因为不用补充，所以不用减2
+        attention_mask = attention_mask[0:max_length ]
+
+    tokens = ["[CLS]"] + tokens + ["[SEP]"]
+    # "O" tag for [PAD], [CLS], [SEP] token    
+    
+    token_type_ids = [0] + token_type_ids + [0]
+    attention_mask = [1] + attention_mask + [1]
+    # 如果长度不够，则调整
+    while (len(tokens) < max_length ):
+        tokens.append("[PAD]") # 追加    
+        token_type_ids.append(0)
+        attention_mask.append(0)
+    token_ids = tokenizer.convert_tokens_to_ids(tokens)
+    
+    return RelationInputFeature(
+        input_ids=np.array(token_ids),
+        token_type_ids = np.array(token_type_ids),
+        attention_mask = np.array(attention_mask),        
+        label = label
+        )
+
+
+
+class DuIEDataset(Dataset):
     """
     Dataset of DuIE.
     """
@@ -311,7 +636,298 @@ class DataCollator:
         return (batched_input_ids, seq_lens, tok_to_orig_start_index,
                 tok_to_orig_end_index, labels)
 
+@dataclass
+class SubjectDataCollator:
+    """
+    Collator for DuIE.
+    """
+    def __call__(self, examples):
+        batched_input_ids = np.stack([x['input_ids'] for x in examples])
+        seq_lens = np.stack([x['seq_lens'] for x in examples])
+        attention_mask = np.stack(
+            [x['attention_mask'] for x in examples])
+        token_typed_ids = np.stack(
+            [x['token_type_ids'] for x in examples])
+        labels = np.stack([x['labels'] for x in examples])
+        origin_info = np.stack(x['origin_info'] for x in examples)
+        batched_input_ids = t.tensor(batched_input_ids).cuda()
+        token_typed_ids = t.tensor(token_typed_ids).cuda()
+        attention_mask = t.tensor(attention_mask).cuda()
+        seq_lens = t.tensor(seq_lens).cuda()
+        labels = t.tensor(labels).cuda()
 
+        return (batched_input_ids,token_typed_ids,attention_mask, seq_lens,labels,origin_info)
+
+
+"""
+功能：这部分数据的加载 是为了预测 subject 
+"""
+class SubjectDataset(Dataset):    
+    def __init__(
+            self, 
+            input_ids ,
+            token_type_ids ,
+            attention_mask,
+            seq_lens,
+            labels,
+            origin_info):
+        super(SubjectDataset, self).__init__()
+
+        self.input_ids = input_ids
+        self.seq_lens = seq_lens        
+        self.labels = labels
+        self.token_type_ids = token_type_ids
+        self.attention_mask = attention_mask
+        self.origin_info = origin_info
+
+    def __len__(self):
+        if isinstance(self.input_ids, np.ndarray):
+            return self.input_ids.shape[0]
+        else:
+            return len(self.input_ids)
+
+    def __getitem__(self, item):
+        return {
+            "input_ids": np.array(self.input_ids[item]),
+            "token_type_ids":np.array(self.token_type_ids[item]),
+            "attention_mask":np.array(self.attention_mask[item]),
+            "seq_lens": np.array(self.seq_lens[item]),
+            # If model inputs is generated in `collate_fn`, delete the data type casting.
+            "labels": np.array(self.labels[item], dtype=np.long),
+            "origin_info":self.origin_info[item],
+        }
+    
+    @classmethod
+    def from_file(cls,
+                  file_path: Union[str, os.PathLike],
+                  tokenizer: BertTokenizer,
+                  max_length: Optional[int]=512,
+                  pad_to_max_length: Optional[bool]=None
+                  ):
+                  
+        assert os.path.exists(file_path) and os.path.isfile(
+            file_path), f"{file_path} dose not exists or is not a file."
+        subject_map_path = os.path.join(
+            os.path.dirname(file_path), "subject2id.json")
+        assert os.path.exists(subject_map_path) and os.path.isfile(
+            subject_map_path
+        ), f"{subject_map_path} dose not exists or is not a file."
+        with open(subject_map_path, 'r', encoding='utf8') as fp:
+            subject_map = json.load(fp)
+        chineseandpunctuationextractor = ChineseAndPunctuationExtractor()
+
+        # 初始化赋空值
+        input_ids, seq_lens, attention_mask, token_type_ids, labels = (
+            [] for _ in range(5))
+        origin_info = [] # 原始文本信息
+        dataset_scale = sum(1 for line in open(file_path, 'r'))
+        print(f"Preprocessing data, loaded from %s" % file_path)
+        with open(file_path, "r", encoding="utf-8") as fp:
+            lines = fp.readlines()
+            for line in tqdm(lines):
+                example = json.loads(line)
+                input_feature = convert_example_to_subject_feature(
+                    example, tokenizer, chineseandpunctuationextractor,
+                    subject_map, max_length, pad_to_max_length)
+                
+                # 得到所有的训练数据
+                input_ids.append(input_feature.input_ids)
+                seq_lens.append(input_feature.seq_len)                
+                labels.append(input_feature.labels)
+                token_type_ids.append(input_feature.token_type_ids)
+                attention_mask.append(input_feature.attention_mask)
+                origin_info.append(example)
+        
+        examples = cls(input_ids,
+                       token_type_ids=token_type_ids,
+                       attention_mask=attention_mask,
+                       seq_lens=seq_lens,
+                       labels=labels,
+                       origin_info=origin_info
+                       )
+        return examples
+
+
+"""
+功能：将 example 中的 text 文本前添加 subject + ['SEP'] 得到examples
+"""
+def process_example(example):
+    examples = []
+    spo_list = example['spo_list'] if "spo_list" in example.keys() else None
+    text_raw = example['text']
+    subjects = []
+
+    for spo in spo_list:
+        subject = spo['subject']  # dict
+        subjects.append(subject)
+    
+    for subject in subjects:
+        # TODO 这里使用什么字符分割，也是一个待研究
+        text = subject +'。'+ text_raw
+        cur_example = {"spo_list":spo_list,"text":text}
+        examples.append(cur_example)
+    return examples
+
+
+"""
+功能：将 example 中的 text 文本前添加 subject + '。' + object + '。'  得到examples
+"""
+def process_example_relation(example):
+    examples = []
+    spo_list = example['spo_list'] if "spo_list" in example.keys() else None
+    text_raw = example['text']    
+    objects = []
+    
+    # 每一条 spo 都会产生一个样本
+    for spo in spo_list:
+        subject = spo['subject']  # dict
+        object_val = list(spo['object'].values())
+        object_val = "。".join(object_val) + "。"        
+        text = subject + '。' + object_val + text_raw
+        cur_example = {"spo_list":spo,"text":text}
+        examples.append(cur_example)
+        
+    return examples
+
+
+
+'''
+功能：为了预测object而加载的数据集，这个数据集不是预加载的，而是直接使用的
+'''
+class ObjectDataset(Dataset):    
+    def __init__(
+            self, 
+            input_ids ,
+            token_type_ids ,
+            attention_mask,            
+            labels):
+        super(SubjectDataset, self).__init__()
+
+        self.input_ids = input_ids                
+        self.token_type_ids = token_type_ids
+        self.attention_mask = attention_mask
+        self.labels = labels
+
+    def __len__(self):
+        if isinstance(self.input_ids, np.ndarray):
+            return self.input_ids.shape[0]
+        else:
+            return len(self.input_ids)
+
+    def __getitem__(self, item):
+        return {
+            "input_ids": np.array(self.input_ids[item]),
+            "token_type_ids":np.array(self.token_type_ids[item]),
+            "attention_mask":np.array(self.attention_mask[item]),            
+            # If model inputs is generated in `collate_fn`, delete the data type casting.
+            "labels": np.array(self.labels[item], dtype=np.long),
+        }
+    
+    @classmethod
+    def from_dict(cls,
+                  batch_origin_dict,
+                #   object_file_path: Union[str, os.PathLike],
+                  tokenizer: BertTokenizer,
+                  max_length: Optional[int] = 512,
+                  pad_to_max_length: Optional[bool]=None
+                  ):
+        
+        with open("./data/object2id.json", 'r', encoding='utf8') as fp:
+            object_map = json.load(fp)
+        chineseandpunctuationextractor = ChineseAndPunctuationExtractor()
+
+        # 初始化赋空值
+        input_ids, seq_lens, attention_mask, token_type_ids, labels = (
+            [] for _ in range(5))
+                
+        for example in batch_origin_dict:                
+            # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条                
+            # 先预处理，将一个example 变成(在其前追加subject+['SEP'])变为多个 example
+            examples = process_example(example)
+            for example in examples:
+                input_feature = convert_example_to_object_feature(
+                    example, tokenizer, chineseandpunctuationextractor,
+                    object_map, max_length, pad_to_max_length)
+                
+                # 得到所有的训练数据
+                input_ids.append(input_feature.input_ids)
+                seq_lens.append(input_feature.seq_len)                
+                labels.append(input_feature.labels)
+                token_type_ids.append(input_feature.token_type_ids)
+                attention_mask.append(input_feature.attention_mask)
+        
+        object_dataset = cls(input_ids,
+                       token_type_ids=token_type_ids,
+                       attention_mask=attention_mask,
+                       seq_lens=seq_lens,
+                       labels=labels,
+                       )
+        return object_dataset
+
+
+def from_dict(batch_origin_dict,              
+              tokenizer: BertTokenizer,
+              max_length: Optional[int] = 512,
+              pad_to_max_length: Optional[bool] = None
+              ):
+
+    with open("./data/object2id.json", 'r', encoding='utf8') as fp:
+        object_map = json.load(fp)
+    chineseandpunctuationextractor = ChineseAndPunctuationExtractor()
+
+    # 初始化赋空值
+    input_ids, attention_mask, token_type_ids, labels = (
+        [] for _ in range(4))
+            
+    for example in batch_origin_dict:                
+        # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条                
+        # 先预处理，将一个example 变成(在其前追加subject+['SEP'])变为多个 example
+        examples = process_example(example)
+        for example in examples:
+            input_feature = convert_example_to_object_feature(
+                example, tokenizer, chineseandpunctuationextractor,
+                object_map, max_length, pad_to_max_length)
+            
+            # 得到所有的训练数据
+            input_ids.append(input_feature.input_ids)            
+            labels.append(input_feature.labels)
+            token_type_ids.append(input_feature.token_type_ids)
+            attention_mask.append(input_feature.attention_mask)  
+    return (input_ids,token_type_ids,attention_mask,labels)
+
+
+"""
+根据dict得到relation 的数据
+batch_origin_dict [{},{}...{}]
+"""
+def from_dict2_relation(batch_origin_dict,              
+              tokenizer: BertTokenizer,
+              max_length: Optional[int] = 512,              
+              ):
+
+    with open("./data/relation2id.json", 'r', encoding='utf8') as fp:
+        relation_map = json.load(fp)
+    chineseandpunctuationextractor = ChineseAndPunctuationExtractor()
+
+    # 初始化赋空值
+    input_ids, attention_mask, token_type_ids, labels = (
+        [] for _ in range(4))
+            
+    for example in batch_origin_dict:                
+        # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条                
+        # 先预处理，将一个example 变成(在其前追加subject+['SEP'])变为多个 example
+        examples = process_example_relation(example)
+        for example in examples:
+            input_feature = convert_example_to_relation_feature(
+                example, tokenizer, chineseandpunctuationextractor,
+                relation_map, max_length)
+            
+            # 得到所有的训练数据
+            input_ids.append(input_feature.input_ids)            
+            labels.append(input_feature.label)
+            token_type_ids.append(input_feature.token_type_ids)
+            attention_mask.append(input_feature.attention_mask)  
+    return (input_ids,token_type_ids,attention_mask,labels)
 
 
 import chardet
