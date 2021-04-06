@@ -256,6 +256,65 @@ def decode_object(logits,id2object_map,tokenizer,object_input_ids):
     # 然后再找出对应的内容
     return batch_objects,batch_labels
 
+"""
+功能： 将最后的结果解码并输出
+"""
+def decode_relation_class(logits,id2relation_map):
+    m = LogSoftmax(dim=-1)
+    a = m(logits)
+    indexs = a.argmax(-1) # 找出每个batch的属性下标
+    clas = []
+    for idx in indexs:
+        cur_cls = id2relation_map[str(idx.item())]
+        clas.append(cur_cls)      
+    return clas
+
+    
+"""
+功能： 将最后的结果组装成一个 spo_list，只支持单条预测
+"""
+def post_process(batch_subjects,
+                     batch_subjects_labels,
+                     batch_objects,
+                     batch_objects_labels,
+                     batch_relations,
+                     origin_info
+                     ):
+    batch_res = []    
+    cnt = 0
+    for item_1 in zip(batch_subjects,batch_subjects_labels): # 从所有的 batch 中取出一条样本
+        subjects,subject_labels = item_1
+        cur_index = 0
+        cur_res ={} # 重置
+        cur_res['text'] = origin_info
+        for item_2 in zip(subjects,subject_labels):  # 从某条样本中取出所有的 subjects 以及其标签
+            subject,subject_label = item_2
+            spo_list = [] # 是一个列表
+            cur_dict = {} # cur_dict 都会被放入到spo_list 中
+            # 取该subjects 对应的objects 和 objects_labels
+            objects = batch_objects[cur_index:cur_index+1] 
+            objects_labels = batch_objects_labels[cur_index:cur_index+1]
+            for item_3 in zip(objects,objects_labels): # 从上述的 objects 以及labels 中对应取出单个
+                objs , obj_labels = item_3
+                for item_4 in zip(objs,obj_labels):                     
+                    val_1 = {}
+                    val_2 = {}
+                    obj,obj_label = item_4
+                    cur_dict['predicate'] = batch_relations[cnt]
+                    cur_dict['subject_type'] = subject_label
+                    cur_dict['subject'] = subject 
+                    val_1["@value"] = obj
+                    cur_dict['object'] = val_1
+                    val_2["@value"] = obj_label
+                    cur_dict['objects_type'] = val_2                    
+                    #print(cur_res)
+                    cnt += 1
+                    spo_list.append(cur_dict)
+            cur_index += 1
+        cur_res["spo_list"] = spo_list
+        batch_res.append(cur_res)
+    return batch_res
+    
 
 
 if __name__ == "__main__":
