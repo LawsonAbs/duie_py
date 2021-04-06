@@ -1,3 +1,9 @@
+'''
+Author: LawsonAbs
+Date: 2021-04-06 17:53:10
+LastEditTime: 2021-04-06 21:44:51
+FilePath: /duie_py/models.py
+'''
 import torch as t
 import torch.nn as nn
 from transformers import BertConfig,BertModel,BertForSequenceClassification
@@ -43,6 +49,9 @@ class RelationModel(nn.Module):
         super(RelationModel,self).__init__()     
         # 这里重新配置了一个config，是为了使用 BertForSequenceClassfication 进行文本分类
         self.config = BertConfig.from_pretrained(name_or_path,num_labels = relation_class_num)
+        
+        # 使用 BertForSequenceClassification 的坏处在于，如果最后想要用模型预测该怎么办？
+        # 可以不用传label，直接对应输出 logits
         self.model = BertForSequenceClassification.from_pretrained(name_or_path, config=self.config)        
 
     def forward(self,input_ids,token_type_ids,attention_mask,labels):
