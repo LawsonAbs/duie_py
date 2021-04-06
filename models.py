@@ -33,6 +33,7 @@ class ObjectModel(nn.Module):
                          attention_mask=attention_mask
                          )
         last_layer = out.last_hidden_state
+        #last_layer,pool_layer = out
         # size = [batch_size,max_seq_length,768]
         out = self.linear(last_layer)                   
         return out

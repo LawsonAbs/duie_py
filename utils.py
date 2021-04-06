@@ -192,14 +192,14 @@ def get_precision_recall_f1(golden_file, predict_file):
 """
 功能：由 预测subject的label 得到实体
 """
-def decode_subject(labels,id2subject_map,input_ids,tokenizer):    
+def decode_subject(logits,id2subject_map,input_ids,tokenizer):    
     m = LogSoftmax(dim=-1)
-    a = m(labels)
+    a = m(logits)
     batch_indexs = a.argmax(2) # 在该维度找出值最大的，就是预测出来的标签    
     batch_subjects =[]
-    batch_labels = []
-    tokens = tokenizer.convert_ids_to_tokens(input_ids[0]) # 得到原字符串
-    for indexs in batch_indexs:
+    batch_labels = []    
+    for i,indexs in enumerate(batch_indexs):
+        tokens = tokenizer.convert_ids_to_tokens(input_ids[i]) # 得到原字符串
         subjects = [] # 预测出最后的结果
         labels = []
         cur_subject = ""
@@ -221,15 +221,23 @@ def decode_subject(labels,id2subject_map,input_ids,tokenizer):
 
 """
 功能：由 预测object 的labels 得到object
+
+params:
+ logits: 预测的值，需要经过softmax处理，然后得到结果
+ id2object_map
+ ...
+
+01.
 """
-def decode_object(labels,id2object_map,tokenizer,input_ids):
+def decode_object(logits,id2object_map,tokenizer,object_input_ids):
     m = LogSoftmax(dim=-1)
-    a = m(labels)
+    a = m(logits)
     batch_indexs = a.argmax(2) # 在该维度找出值最大的，就是预测出来的标签
     batch_objects = [] # 预测出最后的结果
-    batch_labels = []
-    tokens = tokenizer.convert_ids_to_tokens(input_ids[0]) # 得到原字符串
-    for indexs in batch_indexs:
+    batch_labels = []    
+    for item in zip(batch_indexs,object_input_ids):
+        indexs,input_ids = item
+        tokens = tokenizer.convert_ids_to_tokens(input_ids) # 得到原字符串
         objects = []
         labels = []
         cur_object = ""

@@ -849,29 +849,28 @@ class PredictSubjectDataset(Dataset):
 
 
 """
-功能：将 example 中的 text 文本前添加 subject + ['SEP'] 得到examples
+功能：在一条训练样本（example） 中的 text 部分前添加 "subject + 。 " 得到 examples，
+因为subject 可能有多个，所以这里最后的结果是 examples
+
+01. example ： 是一条训练样本
+02. subjects： 每条文本预测得到的 subject 的list 
 """
-def process_example(example,batch_subjects):
+def process_example(example,subjects):
     examples = []
     spo_list = example['spo_list'] if "spo_list" in example.keys() else None
     text_raw = example['text']
-    # 如果subjects 为None，那么我们自己手动生成，否则就用传入的subjects
-    if batch_subjects is None:
+    # 如果subjects 为None，说明是在train模式，那么我们自己手动生成，否则就用传入的subjects
+    if subjects is None:
         subjects = []
         for spo in spo_list:
             subject = spo['subject']  # dict
             subjects.append(subject)
-        for subject in subjects:
-                text = subject +'。'+ text_raw
-                cur_example = {"spo_list":spo_list,"text":text}
-                examples.append(cur_example)
-    else:
-        for subjects in batch_subjects:
-            # TODO 这里使用什么字符分割，也是一个待研究
-            for subject in subjects:
-                text = subject +'。'+ text_raw
-                cur_example = {"spo_list":spo_list,"text":text}
-                examples.append(cur_example)
+
+    # TODO 这里使用什么字符分割，也是一个待研究
+    for subject in subjects:
+        text = subject +'。'+ text_raw
+        cur_example = {"spo_list":spo_list,"text":text}
+        examples.append(cur_example)
     return examples
 
 
@@ -975,7 +974,7 @@ class ObjectDataset(Dataset):
         return object_dataset
 
 
-def from_dict(subjects,
+def from_dict(batch_subjects,
               batch_origin_dict,              
               tokenizer: BertTokenizer,
               max_length: Optional[int] = 512,
@@ -989,8 +988,11 @@ def from_dict(subjects,
     # 初始化赋空值
     input_ids, attention_mask, token_type_ids, labels = (
         [] for _ in range(4))
+    
+    assert len(batch_origin_dict) == len(batch_subjects)
     # batch_origin_dict 是原数据 [{},{} ... {}]
-    for example in batch_origin_dict:      
+    for item in zip(batch_origin_dict,batch_subjects):
+        example,subjects = item 
         # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条                
         # 先预处理，将一个example 变成(在其前追加subject+['SEP'])变为多个 example
         examples = process_example(example,subjects)
@@ -1008,11 +1010,13 @@ def from_dict(subjects,
 
 
 """
-根据dict得到relation 的数据
+功能：根据dict得到relation 的数据
 batch_origin_dict [{},{}...{}]
+
+01.
 """
-def from_dict2_relation(subjects,
-              objects,
+def from_dict2_relation(batch_subjects,
+              batch_objects,
               batch_origin_info,#[{...},{...}...{}]  
               tokenizer: BertTokenizer,
               max_length: Optional[int] = 512,                            
@@ -1059,21 +1063,45 @@ def from_dict2_relation(subjects,
     ]
     }
     '''
-    for example in batch_origin_info:
-        # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条                
-        # 先预处理，将一个example 变成(在其前追加subject+['SEP'])变为多个 example
-        examples = process_example_relation(subjects,objects,example)
-        # 紧接着处理每个example
-        for example in examples:
-            input_feature = convert_example_to_relation_feature(
-                example, tokenizer, chineseandpunctuationextractor,
-                relation_map, max_length)
-            
-            # 得到所有的训练数据
-            input_ids.append(input_feature.input_ids)            
-            labels.append(input_feature.label)
-            token_type_ids.append(input_feature.token_type_ids)
-            attention_mask.append(input_feature.attention_mask)  
+    if batch_subjects is None and batch_objects is None: # train 模式        
+        for item in zip(batch_origin_info,batch_subjects):
+            example, subjects = item
+            # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条   
+            # 先预处理，将一个example 变成(在其前追加subject+['SEP'])变为多个 example
+            examples = process_example_relation(subjects,objects,example)
+            # 紧接着处理每个example
+            for example in examples:
+                input_feature = convert_example_to_relation_feature(
+                    example, tokenizer, chineseandpunctuationextractor,
+                    relation_map, max_length)
+                
+                # 得到所有的训练数据
+                input_ids.append(input_feature.input_ids)            
+                labels.append(input_feature.label)
+                token_type_ids.append(input_feature.token_type_ids)
+                attention_mask.append(input_feature.attention_mask)  
+    else: # predict 模式
+        assert len(batch_subjects) == len(batch_origin_info)  # 必须一一对应
+        cur_index = 0 
+        for item in zip(batch_origin_info,batch_subjects):
+            example, subjects = item
+            # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条   
+            # 先预处理，将一个example 变成(在其前追加subject+['SEP'])变为多个 example
+            examples = process_example_relation(subjects,objects,example)
+
+            objects = batch_objects[cur_index:cur_index+len(subjects)]
+            cur_index += len(subjects)
+            # 紧接着处理每个example
+            for example in examples:
+                input_feature = convert_example_to_relation_feature(
+                    example, tokenizer, chineseandpunctuationextractor,
+                    relation_map, max_length)
+                
+                # 得到所有的训练数据
+                input_ids.append(input_feature.input_ids)            
+                labels.append(input_feature.label)
+                token_type_ids.append(input_feature.token_type_ids)
+                attention_mask.append(input_feature.attention_mask)  
     return (input_ids,token_type_ids,attention_mask,labels)
 
 
