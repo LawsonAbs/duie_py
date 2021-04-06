@@ -497,7 +497,7 @@ def convert_example_to_relation_feature(
     # initialize tag
     # 这里的labels 就是一个一维数组
     label = [0 for i in range(seq_len)]
-    if spo_list is not None: 
+    if spo_list is not None : 
         label = parse_relation_label(spo_list, relation_map)
 
     # add [CLS] and [SEP] token, they are tagged into "O" for outside
@@ -866,22 +866,33 @@ def process_example(example,subjects):
             subject = spo['subject']  # dict
             subjects.append(subject)
 
-    # TODO 这里使用什么字符分割，也是一个待研究
-    for subject in subjects:
-        text = subject +'。'+ text_raw
-        cur_example = {"spo_list":spo_list,"text":text}
+    # 都是在predict 下发生
+    elif len(subjects) == 0: # subject = [] 这种情况
+        cur_example = {"spo_list":spo_list,"text":text_raw}
         examples.append(cur_example)
+    else:
+        # TODO 这里使用什么字符分割，也是一个待研究
+        for subject in subjects:
+            text = subject +'。'+ text_raw
+            cur_example = {"spo_list":spo_list,"text":text}
+            examples.append(cur_example)
     return examples
 
 
 """
 功能：将 example 中的 text 文本前添加 subject + '。' + object + '。'  得到examples
+
+
+params: 
+ batch_objects 是一个[[],[],...]。 里面的每个都是 subject 的 预测集合
+
 """
-def process_example_relation(batch_subjects,objects,example):
+def process_example_relation(batch_subjects,batch_objects,example):
     examples = []
     text_raw = example['text']
 
-    if batch_subjects is None and objects is None:
+    # in train
+    if batch_subjects is None and batch_objects is None:
         spo_list = example['spo_list'] if "spo_list" in example.keys() else None        
         
         # 每一条 spo 都会产生一个样本
@@ -893,11 +904,16 @@ def process_example_relation(batch_subjects,objects,example):
             cur_example = {"spo_list":spo,"text":text}
             examples.append(cur_example)
     
+    # in predict
     else: # 这是个挺复杂的工作，因为subjects 和 objects 的值不是一一对应的
-        batch_subjects.squeeze_() # 首先给压平
-        for subject in batch_subjects: # 找到每一个                
-                obj = objects[i]
-                text = subject + '。' + obj + text_raw
+        # batch_subjects.squeeze_() # 首先给压平
+        for item in zip(batch_subjects,batch_objects): # 找到每一个
+                subject , objects = item
+                for object in objects:                    
+                    text = subject + '。' + object + text_raw
+                    # 因为是在predictr阶段，这里 的spo_list 是不用传入值的
+                    cur_example = {"spo_list":None,"text":text} 
+                    examples.append(cur_example)
     return examples
 
 
@@ -1085,11 +1101,10 @@ def from_dict2_relation(batch_subjects,
         cur_index = 0 
         for item in zip(batch_origin_info,batch_subjects):
             example, subjects = item
+            objects = batch_objects[cur_index:cur_index+len(subjects)]
             # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条   
             # 先预处理，将一个example 变成(在其前追加subject+['SEP'])变为多个 example
-            examples = process_example_relation(subjects,objects,example)
-
-            objects = batch_objects[cur_index:cur_index+len(subjects)]
+            examples = process_example_relation(subjects,objects,example)            
             cur_index += len(subjects)
             # 紧接着处理每个example
             for example in examples:
