@@ -36,7 +36,6 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import BatchSampler,SequentialSampler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from transformers import BertTokenizer, BertForSequenceClassification
-from transformers.utils.dummy_pt_objects import BertModel
 
 from data_loader import DuIEDataset, DataCollator, ObjectDataset,SubjectDataset,SubjectDataCollator
 from data_loader import PredictSubjectDataset,PredictSubjectDataCollator
@@ -484,7 +483,7 @@ if __name__ == "__main__":
     # 指定GPU设备    
     device = t.device("cuda" if t.cuda.is_available() and not args.n_gpu else "cpu")    
 
-    if args.do_train:        
+    if args.do_train:
         do_train()
     if args.do_predict:
         model_subject_path = "./model_subject/model_subject_64236.pdparams"

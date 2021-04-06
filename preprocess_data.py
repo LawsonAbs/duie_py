@@ -95,7 +95,7 @@ def get_id2relation(in_path,out_path):
     relation_map={}
     with open(in_path,'r') as f:
         cont = json.load(f)
-        index = 2
+        index = 0
         for row in cont:
             relation = row['predicate']
             relation_map[index] = relation
