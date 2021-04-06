@@ -56,7 +56,7 @@
                 "--seed", "42",       
                 "--data_path","./data",
                 "--max_seq_length", "128",
-                "--batch_size", "4",                 
+                "--batch_size", "1",                 
                 //"--init_checkpoint","./checkpoints/model_40000.pdparams",
                 "--output_dir", "./checkpoints"]
         },
