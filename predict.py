@@ -36,12 +36,11 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import BatchSampler,SequentialSampler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from transformers import BertTokenizer, BertForSequenceClassification
-from transformers.utils.dummy_pt_objects import BertModel
 
 from data_loader import DuIEDataset, DataCollator, ObjectDataset,SubjectDataset,SubjectDataCollator
 from data_loader import PredictSubjectDataset,PredictSubjectDataCollator
 from utils import decode_subject,decode_object, decoding, find_entity, get_precision_recall_f1, write_prediction_results
-
+from utils import decode_relation_class,post_process
 from data_loader import from_dict,from_dict2_relation
 
 parser = argparse.ArgumentParser()
@@ -171,7 +170,7 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
 
     # Loads dataset.
     dev_dataset = PredictSubjectDataset.from_file(
-        os.path.join(args.data_path, 'dev_data_200.json'),
+        os.path.join(args.data_path, 'dev_data_100.json'),
         tokenizer,
         args.max_seq_length,
         True
@@ -185,8 +184,9 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
         )
 
     model_subject.eval()
-    # 将预测结果写到文件中
+    # 将subject的预测结果写到文件中
     file_path = "./data/subject_predict.txt"    
+    res = [] # 最后的预测结果
     for step, batch in enumerate(dev_data_loader):
         input_ids,token_type_ids,attention_mask, origin_info = batch
         # labels size = [batch_size,max_seq_length]
@@ -198,6 +198,11 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
         # 得到预测到的 subject
         batch_subjects,batch_subject_labels = decode_subject(logits_1,id2subject_map,input_ids,tokenizer)
         #visualize_subject(file_path,origin_info,batch_subjects,batch_subject_labels)
+        
+        # 需要判断 batch_subjects 是空的情况，最好能够和普通subjects 一样处理        
+        if(len(batch_subjects[0]) == 0):
+            print("----- 未预测到subject ----------")        
+            continue
 
         # ====== 根据origin_info 得到 subtask 2 的训练数据 ==========
         # 这里的object_input_ids 的 size 不再是args.batch_size ，可能比这个稍大
@@ -210,14 +215,16 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
         object_input_ids = t.tensor(object_input_ids).cuda()
         object_token_type_ids = t.tensor(object_token_type_ids).cuda()
         object_attention_mask = t.tensor(object_attention_mask).cuda()
-
+        
         logits_2 = model_object(input_ids = object_input_ids,
                                 token_type_ids=object_token_type_ids,
                                 attention_mask=object_attention_mask
                                 )
-        batch_objects,batch_object_label = decode_object(logits_2,id2object_map,tokenizer,object_input_ids)
+        batch_objects,batch_object_labels = decode_object(logits_2,id2object_map,tokenizer,object_input_ids)
 
-
+        if(len(batch_objects[0]) == 0):
+            print("----- 未预测到subject ----------")        
+            continue
         # ====== 根据 subject + object 得到 subtask 3 的训练数据 ==========        
         relation_input_ids, relation_token_type_ids, relation_attention_mask, relation_labels = from_dict2_relation(batch_subjects,
         batch_objects,
@@ -234,8 +241,28 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
         out = model_relation(input_ids=relation_input_ids,
                                 token_type_ids=relation_token_type_ids,
                                 attention_mask=relation_attention_mask,
-                                labels = relation_labels
+                                labels = None                                
                                 )
+        logits = out.logits # 输出最后的分类分数
+        # size [batch_size, relation_class_num]
+
+        batch_relations = decode_relation_class(logits,id2relation_map)
+
+        # 得到最后的结果
+        cur_res = post_process(batch_subjects, # 5
+                     batch_subject_labels, # 5
+                     batch_objects, # 5
+                     batch_object_labels,# 5
+                     batch_relations,
+                     origin_info[0]['text']
+        )        
+        res.append(cur_res)
+
+    # 写出最后的结果
+    predict_file_path = "./data/dev_data_predict.json"
+    with open(predict_file_path,"a",encoding="utf-8") as f:
+        for line in res:
+            json.dump(res,f,ensure_ascii=False)
     print("=====predicting complete=====")
 
 
@@ -246,6 +273,6 @@ if __name__ == "__main__":
 
     if args.do_predict:
         model_subject_path = "./model_subject/model_subject_64236.pdparams"
-        model_object_path = "./model_object/model_object_42824.pdparams"
-        model_relation_path  = "./model_relation/model_relation_5000.pdparams"
+        model_object_path = "./model_object/model_object_214120.pdparams"
+        model_relation_path  = "./model_relation/model_relation_299768.pdparams"
         do_predict(model_subject_path,model_object_path,model_relation_path)
