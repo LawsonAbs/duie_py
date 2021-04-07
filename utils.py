@@ -210,7 +210,9 @@ def decode_subject(logits,id2subject_map,input_ids,tokenizer):
             if ind == 1 and cur_subject!="": # 说明是中间部分，且 cur_subject 不为空
                 cur_subject += tokens[i]
             elif ind == 0 and cur_subject!="": # 将 cur_subject 放入到 subjects 中
+                cur_subject = cur_subject.replace("#","") # 替换掉，因为这会干扰后面的实现
                 subjects.append(cur_subject)
+                cur_subject_label = cur_subject_label.replace("#","")
                 labels.append(cur_subject_label)
                 cur_subject = ""
         batch_subjects.append(subjects)
@@ -248,7 +250,10 @@ def decode_object(logits,id2object_map,tokenizer,object_input_ids):
             if ind == 1 and cur_object!="": # 说明是中间部分，且 cur_subject 不为空
                 cur_object += tokens[i]
             elif ind == 0 and cur_object!="": # 将 cur_subject 放入到 subjects 中
-                objects.append(cur_object)
+                cur_object = cur_object.replace("#","")
+                cur_object_label = cur_object_label.replace("#","")
+
+                objects.append(cur_object)                
                 labels.append(cur_object_label)
                 cur_object = ""
         batch_objects.append(objects)
@@ -271,7 +276,7 @@ def decode_relation_class(logits,id2relation_map):
 
     
 """
-功能： 将最后的结果组装成一个 spo_list，只支持单条预测
+功能： 将最后的结果组装成一个 spo_list，只支持单条预测!!!
 """
 def post_process(batch_subjects,
                      batch_subjects_labels,
@@ -281,37 +286,95 @@ def post_process(batch_subjects,
                      origin_info
                      ):
     batch_res = []    
-    cnt = 0
+    cnt = 0    
     for item_1 in zip(batch_subjects,batch_subjects_labels): # 从所有的 batch 中取出一条样本
         subjects,subject_labels = item_1
         cur_index = 0
         cur_res ={} # 重置
-        cur_res['text'] = origin_info
+        cur_res['text'] = origin_info     
+        spo_list = [] # 是一个列表   
         for item_2 in zip(subjects,subject_labels):  # 从某条样本中取出所有的 subjects 以及其标签
             subject,subject_label = item_2
-            spo_list = [] # 是一个列表
-            cur_dict = {} # cur_dict 都会被放入到spo_list 中
             # 取该subjects 对应的objects 和 objects_labels
-            objects = batch_objects[cur_index:cur_index+1] 
-            objects_labels = batch_objects_labels[cur_index:cur_index+1]
-            for item_3 in zip(objects,objects_labels): # 从上述的 objects 以及labels 中对应取出单个
-                objs , obj_labels = item_3
-                for item_4 in zip(objs,obj_labels):                     
-                    val_1 = {}
-                    val_2 = {}
-                    obj,obj_label = item_4
-                    cur_dict['predicate'] = batch_relations[cnt]
-                    cur_dict['subject_type'] = subject_label
-                    cur_dict['subject'] = subject 
+            objects = batch_objects[cur_index:cur_index+1][0]  # 和subject 对应在一起的所有 object
+            objects_labels = batch_objects_labels[cur_index:cur_index+1][0]            
+            for item_3 in zip(objects,objects_labels): # 从上述的 objects 以及labels 中对应取出单个                
+                cur_dict = {} # cur_dict 都会被放入到spo_list 中
+                obj , obj_label = item_3
+                if (subject == obj): # 说明预测的subject 和 object 一样，这样的数据没有意义
+                    continue
+                val_1 = {} # 存放object
+                val_2 = {} # 存放object_type
+                cur_dict['predicate'] = batch_relations[cnt]                
+                
+                # 如果是复杂的结构，则需要另行处理
+                if(batch_relations[cnt] == '饰演' or batch_relations[cnt]=="配音"): 
+                    if obj_label == "影视作品":
+                        val_1["inWork"] = obj
+                        val_2["inWork"] = obj_label
+                    elif obj_label == "人物":
+                        val_2["@value"] = obj_label
+                        val_1["@value"] = obj
+                else: 
                     val_1["@value"] = obj
-                    cur_dict['object'] = val_1
                     val_2["@value"] = obj_label
-                    cur_dict['objects_type'] = val_2                    
-                    #print(cur_res)
-                    cnt += 1
-                    spo_list.append(cur_dict)
+                 
+                cur_dict['object'] = val_1
+                cur_dict['object_type'] = val_2
+                cur_dict['subject_type'] = subject_label
+                cur_dict['subject'] = subject                    
+                #print(cur_res)
+                cnt += 1
+                spo_list.append(cur_dict)                
             cur_index += 1
-        cur_res["spo_list"] = spo_list
+            
+            # 处理复杂的结构 => 修改 spo_list            
+            temp = []
+            visit = [1]* len(spo_list) # 用于标记是否copy值到其中
+            for i,spo_i in enumerate(spo_list):        
+                for j in range(i+1,len(spo_list)):
+                    #print(spo_i,spo_list[j],"\n")
+                    spo_j = spo_list[j]
+                    # ======================== 如果是饰演关系   ========================
+                    if spo_i['subject'] == spo_j['subject'] and spo_i['predicate'] == spo_j['predicate'] and spo_i['predicate'] == "饰演":# 说明可以合并，合并前记得删除
+                        visit[i] = 0
+                        visit[j] = 0 #用于标记是否copy值
+                        combine_res = {}
+                        combine_res['subject'] = spo_i['subject']
+                        combine_res['subject_type'] = spo_i['subject_type']
+                        object_1 = spo_i['object'] # dict
+                        object_2 = spo_j['object']
+                        object_2.update(object_1)            
+                        object_type_1 = spo_i['object_type'] # dict
+                        object_type_2 = spo_j['object_type']
+                        object_type_2.update(object_type_1)        
+                        combine_res['object_type'] = object_type_2
+                        combine_res['object'] = object_2        
+                        combine_res['predicate'] = spo_i['predicate']
+                        #print(combine_res,"\n")
+                        temp.append(combine_res)
+                    elif spo_i['subject'] == spo_j['subject'] and spo_i['predicate'] == spo_j['predicate'] and spo_i['predicate'] == "配音":
+                        visit[i] = 0
+                        visit[j] = 0 #用于标记是否copy值
+                        combine_res = {}
+                        combine_res['subject'] = spo_i['subject']
+                        combine_res['subject_type'] = spo_i['subject_type']
+                        object_1 = spo_i['object'] # dict
+                        object_2 = spo_j['object']
+                        object_2.update(object_1)
+                        object_type_1 = spo_i['object_type'] # dict
+                        object_type_2 = spo_j['object_type']
+                        object_type_2.update(object_type_1)        
+                        combine_res['object_type'] = object_type_2
+                        combine_res['object'] = object_2
+                        combine_res['predicate'] = spo_i['predicate']
+                        #print(combine_res,"\n")
+                        temp.append(combine_res)
+            for i in range(0,len(visit)):
+                if visit[i]:
+                    temp.append(spo_list[i])            
+            cur_res["spo_list"]= temp
+            
         batch_res.append(cur_res)
     return batch_res
     

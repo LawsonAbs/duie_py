@@ -1,3 +1,6 @@
+"""
+训练 object的模型
+"""
 from models import RelationModel, SubjectModel,ObjectModel
 import logging
 import argparse
@@ -97,6 +100,10 @@ def do_train():
     tokenizer = BertTokenizer.from_pretrained("/home/lawson/pretrain/bert-base-chinese")
     criterion = nn.CrossEntropyLoss() # 使用交叉熵计算损失
 
+    if os.path.exists(args.init_checkpoint):
+        print(f"加载模型:{args.init_checkpoint}")
+        model_object.load_state_dict(t.load(args.init_checkpoint))
+
     # Loads dataset.
     train_dataset = SubjectDataset.from_file(
         os.path.join(args.data_path, 'train_data.json'),
@@ -117,6 +124,7 @@ def do_train():
         #batch_sampler=train_batch_sampler,
         batch_size=args.batch_size,
         collate_fn=collator, # 重写一个 collator
+        shuffle=True
         )
     
     dev_file_path = os.path.join(args.data_path, 'dev_data_200.json')
@@ -136,7 +144,7 @@ def do_train():
     
     # 需要合并所有模型的参数    
     optimizer = t.optim.AdamW(
-        [{'params':model_object.parameters(),'lr':2e-5},        
+        [{'params':model_object.parameters(),'lr':5e-6},        
         ],
         #weight_decay=args.weight_decay,        
         ) 
@@ -157,12 +165,12 @@ def do_train():
         tic_epoch = time.time()
         # 设置为训练模式        
         model_object.train() # 根据subject 预测object        
-        for step, batch in enumerate(train_data_loader):
+        for step, batch in tqdm(enumerate(train_data_loader)):
             input_ids,token_type_ids,attention_mask, labels,origin_info = batch
             
             # ====== 根据origin_info 得到 subtask 2 的训练数据 ==========
             # 这里的object_input_ids 的size 不再是args.batch_size ，可能比这个稍大
-            object_input_ids, object_token_type_ids,object_attention_mask, object_labels = from_dict(subjects=None, batch_origin_dict=origin_info,tokenizer=tokenizer,max_length=args.max_seq_length,pad_to_max_length = True)
+            object_input_ids, object_token_type_ids,object_attention_mask, object_labels = from_dict(batch_subjects=None, batch_origin_dict=origin_info,tokenizer=tokenizer,max_length=args.max_seq_length,pad_to_max_length = True)
             object_input_ids = t.tensor(object_input_ids).cuda()
             object_token_type_ids = t.tensor(object_token_type_ids).cuda()
             object_attention_mask = t.tensor(object_attention_mask).cuda()            
@@ -189,41 +197,16 @@ def do_train():
                        logging_steps / (time.time() - tic_train))
                        )
                 tic_train = time.time()
-            '''
-            if global_step % save_steps == 0 and global_step != 0 :
-                print("\n=====start evaluating ckpt of %d steps=====" %
-                      global_step)
-                precision, recall, f1 = evaluate(
-                    model_subject, criterion, dev_data_loader, dev_file_path, "eval")
-                print("precision: %.2f\t recall: %.2f\t f1: %.2f\t" %
-                      (100 * precision, 100 * recall, 100 * f1))
-                if (not args.n_gpu > 1) or t.distributed.get_rank() == 0:
-                    print("saving checkpoing model_subject_%d.pdparams to %s " %
-                          (global_step, args.output_dir))
-                    t.save(model_subject.state_dict(),
-                                os.path.join(args.output_dir,
-                                             "model_subject_%d.pdparams" % global_step))
-                model_subject.train()  # back to train mode
-            '''     
+            
+                print("saving checkpoing model_subject_%d.pdparams to %s " %
+                        (global_step, args.output_dir))
+                t.save(model_object.state_dict(),
+                            os.path.join(args.output_dir,"model_subject_%d.pdparams" % global_step))            
+                 
             global_step += 1
-        # tic_epoch = time.time() - tic_epoch
-        # print("epoch time footprint: %d hour %d min %d sec" %
-        #       (tic_epoch // 3600, (tic_epoch % 3600) // 60, tic_epoch % 60))
-
-        '''
-        # Does final evaluation.    
-        print("\n=====start evaluating last ckpt of %d steps=====" %
-                global_step)
-        precision, recall, f1 = evaluate(model_subject, 
-                                        criterion,
-                                        dev_data_loader,
-                                        dev_file_path,
-                                        "eval")
-        print("precision: %.2f\t recall: %.2f\t f1: %.2f\t" %
-                (100 * precision, 100 * recall, 100 * f1))
-        '''        
+        
         t.save(model_object.state_dict(),os.path.join(args.output_dir,
-                            "model_object_%d.pdparams" % global_step))        
+                            "model_object_%d.pdparams" % global_step))
         print("\n=====training complete=====")
 
 
