@@ -1,17 +1,3 @@
-# Copyright (c) 2021 Baidu.com, Inc. All Rights Reserved
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 from models import RelationModel, SubjectModel,ObjectModel
 import logging
 import argparse
@@ -166,10 +152,10 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
     model_relation = model_relation.cuda()
     model_relation.load_state_dict(t.load(model_relation_path))
 
-    tokenizer = BertTokenizer.from_pretrained("/home/lawson/pretrain/bert-base-chinese")  
-
+    tokenizer = BertTokenizer.from_pretrained("/home/lawson/pretrain/bert-base-chinese")    
     # Loads dataset.
     dev_dataset = PredictSubjectDataset.from_file(
+        #os.path.join(args.data_path, 'train_data.json'),
         os.path.join(args.data_path, 'dev_data.json'),
         tokenizer,
         args.max_seq_length,
@@ -187,11 +173,11 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
     model_object.eval()
     model_relation.eval()
     # 将subject的预测结果写到文件中
-    file_path = "./data/subject_predict.txt"    
+    #file_path = "./data/subject_predict.txt"    
     res = [] # 最后的预测结果
     invalid_num = 0 # 预测失败的个数
     with t.no_grad():
-        for step, batch in tqdm(enumerate(dev_data_loader)):
+        for batch in tqdm(dev_data_loader):
             input_ids,token_type_ids,attention_mask, origin_info = batch
             # labels size = [batch_size,max_seq_length]
             logits_1 = model_subject(input_ids=input_ids,
@@ -229,7 +215,7 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
 
             if(len(batch_objects[0]) == 0):
                 invalid_num+=1
-                #print("----- 未预测到subject ----------")        
+                #print("----- 未预测到 object ----------")        
                 continue
             # ====== 根据 subject + object 得到 subtask 3 的训练数据 ==========        
             relation_input_ids, relation_token_type_ids, relation_attention_mask, relation_labels = from_dict2_relation(batch_subjects,
@@ -265,12 +251,13 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
             res.append(cur_res)
 
     # 写出最后的结果
-    predict_file_path = "./data/dev_data_predict.json"
+    #predict_file_path = os.path.join(args.data_path, 'train_data_2_predict.json') 
+    predict_file_path = os.path.join(args.data_path, 'dev_data_predict.json') 
     with open(predict_file_path,"w",encoding="utf-8") as f:
         for line in res:        
             json_str = json.dumps(line,ensure_ascii=False)
             json_str=json_str[1:-1]
-            #print(json_str)        
+            #print(json_str)
             f.write(json_str)
             f.write('\n')          
     print(f"未预测到的个数是：{invalid_num}")
@@ -285,5 +272,5 @@ if __name__ == "__main__":
     if args.do_predict:
         model_subject_path = "./model_subject/model_subject_64236.pdparams"
         model_object_path = "./model_object/model_object_214120.pdparams"
-        model_relation_path  = "./model_relation/model_relation_299768.pdparams"
+        model_relation_path  = "./model_relation/model_relation_513888.pdparams"
         do_predict(model_subject_path,model_object_path,model_relation_path)
