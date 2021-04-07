@@ -1,4 +1,6 @@
-
+"""
+训练relation 预测的模型
+"""
 
 from models import RelationModel, SubjectModel,ObjectModel
 import logging
