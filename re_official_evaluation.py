@@ -273,9 +273,9 @@ def calc_pr(predict_filename, alias_filename, golden_filename):
     dir_name = os.path.dirname(predict_filename)
     all_info_path = dir_name + "/all_info.txt"
     
-    # 如果存在这个文件
+    # 如果存在这个文件，则删除
     if os.path.exists(all_info_path):
-        
+        os.remove(all_info_path)        
 
     sequence = ['correct_spo','redundant_spo','forget_spo'] # 定下三个顺序
     with open(all_info_path,'w') as f:

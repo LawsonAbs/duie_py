@@ -155,8 +155,8 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
     tokenizer = BertTokenizer.from_pretrained("/home/lawson/pretrain/bert-base-chinese")    
     # Loads dataset.
     dev_dataset = PredictSubjectDataset.from_file(
-        #os.path.join(args.data_path, 'train_data.json'),
-        os.path.join(args.data_path, 'dev_data.json'),
+        os.path.join(args.data_path, 'train_data_2.json'),
+        #os.path.join(args.data_path, 'dev_data.json'),
         tokenizer,
         args.max_seq_length,
         True
@@ -251,8 +251,8 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
             res.append(cur_res)
 
     # 写出最后的结果
-    #predict_file_path = os.path.join(args.data_path, 'train_data_2_predict.json') 
-    predict_file_path = os.path.join(args.data_path, 'dev_data_predict.json') 
+    predict_file_path = os.path.join(args.data_path, 'train_data_2_predict.json') 
+    #predict_file_path = os.path.join(args.data_path, 'dev_data_predict.json') 
     with open(predict_file_path,"w",encoding="utf-8") as f:
         for line in res:        
             json_str = json.dumps(line,ensure_ascii=False)

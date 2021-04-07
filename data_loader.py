@@ -865,8 +865,10 @@ def process_example(example,subjects):
         for spo in spo_list:
             subject = spo['subject']  # dict
             subjects.append(subject)
-
-    # 都是在predict 下发生
+            text = subject + '。' + text_raw
+            cur_example = {"spo_list":spo_list,"text":text}
+            examples.append(cur_example)
+    # in predict 
     elif len(subjects) == 0: # subject = [] 这种情况
         cur_example = {"spo_list":spo_list,"text":text_raw}
         examples.append(cur_example)
@@ -910,7 +912,7 @@ def process_example_relation(batch_subjects,batch_objects,example):
         for item in zip(batch_subjects,batch_objects): # 找到每一个
                 subject , objects = item
                 for object in objects:                    
-                    text = subject + '。' + object + text_raw
+                    text = subject + '。' + object +"。"+ text_raw
                     # 因为是在predictr阶段，这里 的spo_list 是不用传入值的
                     cur_example = {"spo_list":None,"text":text} 
                     examples.append(cur_example)
@@ -1004,24 +1006,40 @@ def from_dict(batch_subjects,
     # 初始化赋空值
     input_ids, attention_mask, token_type_ids, labels = (
         [] for _ in range(4))
-    
-    assert len(batch_origin_dict) == len(batch_subjects)
-    # batch_origin_dict 是原数据 [{},{} ... {}]
-    for item in zip(batch_origin_dict,batch_subjects):
-        example,subjects = item 
-        # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条                
-        # 先预处理，将一个example 变成(在其前追加subject+['SEP'])变为多个 example
-        examples = process_example(example,subjects)
-        for example in examples:
-            input_feature = convert_example_to_object_feature(
-                example, tokenizer, chineseandpunctuationextractor,
-                object_map, max_length, pad_to_max_length)
-            
-            # 得到所有的训练数据
-            input_ids.append(input_feature.input_ids)            
-            labels.append(input_feature.labels)
-            token_type_ids.append(input_feature.token_type_ids)
-            attention_mask.append(input_feature.attention_mask)  
+    if batch_subjects is None: # in train
+        for example in batch_origin_dict:            
+            # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条                
+            # 先预处理，将一个example 变成(在其前追加subject+['SEP'])变为多个 example
+            examples = process_example(example,subjects=None)
+            for example in examples:
+                input_feature = convert_example_to_object_feature(
+                    example, tokenizer, chineseandpunctuationextractor,
+                    object_map, max_length, pad_to_max_length)
+                
+                # 得到所有的训练数据
+                input_ids.append(input_feature.input_ids)            
+                labels.append(input_feature.labels)
+                token_type_ids.append(input_feature.token_type_ids)
+                attention_mask.append(input_feature.attention_mask)  
+        pass
+    else:
+        assert len(batch_origin_dict) == len(batch_subjects)
+        # batch_origin_dict 是原数据 [{},{} ... {}]
+        for item in zip(batch_origin_dict,batch_subjects):
+            example,subjects = item 
+            # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条                
+            # 先预处理，将一个example 变成(在其前追加subject+['SEP'])变为多个 example
+            examples = process_example(example,subjects)
+            for example in examples:
+                input_feature = convert_example_to_object_feature(
+                    example, tokenizer, chineseandpunctuationextractor,
+                    object_map, max_length, pad_to_max_length)
+                
+                # 得到所有的训练数据
+                input_ids.append(input_feature.input_ids)            
+                labels.append(input_feature.labels)
+                token_type_ids.append(input_feature.token_type_ids)
+                attention_mask.append(input_feature.attention_mask)  
     return (input_ids,token_type_ids,attention_mask,labels)
 
 
