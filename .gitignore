@@ -1,4 +1,5 @@
-./data/
+log/*
+data/*
 model_object/
 model_subject/
 model_relation/
