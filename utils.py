@@ -191,24 +191,34 @@ def get_precision_recall_f1(golden_file, predict_file):
 
 """
 功能：由 预测subject的label 得到实体
+
+params:
+ origin_text:原文本，用于消除不认识的字变成 [UNK] 的问题
 """
-def decode_subject(logits,id2subject_map,input_ids,tokenizer):    
+def decode_subject(logits,id2subject_map,input_ids,tokenizer,origin_text,batch_offset_mapping):
     m = LogSoftmax(dim=-1)
     a = m(logits)
     batch_indexs = a.argmax(2) # 在该维度找出值最大的，就是预测出来的标签    
     batch_subjects =[]
     batch_labels = []    
     for i,indexs in enumerate(batch_indexs):
+        offset_mapping  = batch_offset_mapping[i] # 拿到当前的offset_mapping
         tokens = tokenizer.convert_ids_to_tokens(input_ids[i]) # 得到原字符串
         subjects = [] # 预测出最后的结果
         labels = []
         cur_subject = ""
         for i,ind in enumerate(indexs):
             if ind > 1 : # 说明是一个标签的开始
-                cur_subject+=tokens[i] 
+                offset = offset_mapping[i]
+                left,right = tuple(offset)
+                cur_subject += origin_text[left:right]
+                #cur_subject += origin_text[i-1] # 因为有的字无法识别，所以这里用origin_text. i-1 是因为 相比而言，origin_text 少了 [CLS]
                 cur_subject_label = id2subject_map[str(ind.item())]
             if ind == 1 and cur_subject!="": # 说明是中间部分，且 cur_subject 不为空
-                cur_subject += tokens[i]
+                offset = offset_mapping[i]
+                left,right = tuple(offset)
+                #cur_subject += tokens[i]
+                cur_subject += origin_text[left:right]
             elif ind == 0 and cur_subject!="": # 将 cur_subject 放入到 subjects 中
                 cur_subject = cur_subject.replace("#","") # 替换掉，因为这会干扰后面的实现
                 subjects.append(cur_subject)
@@ -217,7 +227,7 @@ def decode_subject(logits,id2subject_map,input_ids,tokenizer):
                 cur_subject = ""
         batch_subjects.append(subjects)
         batch_labels.append(labels)
-    # 然后再找出对应的内容
+    # 然后再找出对应的内容    
     return batch_subjects,batch_labels
 
 
@@ -228,27 +238,30 @@ params:
  logits: 预测的值，需要经过softmax处理，然后得到结果
  id2object_map
  ...
+ object_origin_info: 用于帮助恢复UNK 字
 
 01.
 """
-def decode_object(logits,id2object_map,tokenizer,object_input_ids):
+def decode_object(logits,id2object_map,tokenizer,object_input_ids,object_origin_info,object_offset_mapping):
     m = LogSoftmax(dim=-1)
     a = m(logits)
     batch_indexs = a.argmax(2) # 在该维度找出值最大的，就是预测出来的标签
     batch_objects = [] # 预测出最后的结果
     batch_labels = []    
-    for item in zip(batch_indexs,object_input_ids):
-        indexs,input_ids = item
+    for item in zip(batch_indexs,object_input_ids,object_offset_mapping,object_origin_info):
+        indexs,input_ids,offset , text_raw = item
         tokens = tokenizer.convert_ids_to_tokens(input_ids) # 得到原字符串
         objects = []
         labels = []
         cur_object = ""
         for i,ind in enumerate(indexs):
-            if ind > 1 : # 说明是一个标签的开始
-                cur_object+=tokens[i] 
+            if ind > 1 : # 说明是一个标签的开始                
+                left,right = tuple(offset[i])                
+                cur_object+= text_raw[left:right] 
                 cur_object_label = id2object_map[str(ind.item())]
             if ind == 1 and cur_object!="": # 说明是中间部分，且 cur_subject 不为空
-                cur_object += tokens[i]
+                left,right = tuple(offset[i])                
+                cur_object+= text_raw[left:right] 
             elif ind == 0 and cur_object!="": # 将 cur_subject 放入到 subjects 中
                 cur_object = cur_object.replace("#","")
                 cur_object_label = cur_object_label.replace("#","")
@@ -378,6 +391,24 @@ def post_process(batch_subjects,
         batch_res.append(cur_res)
     return batch_res
     
+
+"""
+去除字符串中的数字，如果有连续的数字仅保留一个
+"""
+def get_rid_of_number_in_str(string):
+    deleted = [1] * len(string)
+    res = "" 
+    pre_char = '' # 上一个字符
+    for i,char in enumerate(string):
+        if char.isdigit()  and pre_char.isdigit():# 如果当前是数字，且之前也是数字
+            deleted[i] = 0 # 记为待删除
+        #print(char,end='')
+        pre_char = char
+    
+    for i in range(len(string)):
+        if deleted[i]:
+            res+=string[i]
+    return res
 
 
 if __name__ == "__main__":
