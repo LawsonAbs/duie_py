@@ -325,4 +325,8 @@ if __name__ == '__main__':
     predict_filename = args.predict_file
     alias_filename = args.alias_file
     ret_info = calc_pr(predict_filename, alias_filename, golden_filename)
-    print(json.dumps(ret_info))
+    # print(ret_info['data'])
+    for item in ret_info['data']:
+        print(item)
+        
+    #print(json.dumps(ret_info))
