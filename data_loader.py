@@ -143,10 +143,12 @@ def parse_label(spo_list, label_map, tokens, tokenizer):
 '''
 功能：获取subtask 1 中的label
 01. 这个 subtask 1 就是一个普通的 NER任务
-subject_map：
+02. 为了更好地召回出subject，这里将object 和subject 都视为寻找的目标
+params:
+ subject_map：
+ object_map: 
 '''
-def parse_subject_label(spo_list, subject_map, tokens, tokenizer):
-    # 2 tags for each predicate + I tag + O tag    
+def parse_subject_label(spo_list, subject_map, tokens, tokenizer,object_map):    
     seq_len = len(tokens)
     # initialize tag
     labels = [0 for i in range(seq_len)]
@@ -158,13 +160,30 @@ def parse_subject_label(spo_list, subject_map, tokens, tokenizer):
         subject_type = spo['subject_type']
         
         # 遍历找出下标
-        # TODO:这里其实存在一个问题，就是如果subject 在text中多次出现，那么该怎么办？
+        # TODO:这里其实存在一个问题，就是如果 subject 在text中多次出现，那么该怎么办？ => 这里的处理是break
         for i,word in enumerate(tokens): 
             if tokens[i:i+subject_len] == subject_val_tokens:
                 labels[i] = subject_map[subject_type] # 'B_图书作品'
                 for j in range(i+1,i+subject_len):
                     labels[j] = 1 # 'I'
                 break
+
+        # ========== 找 object 的标签 ==========
+        object_dict = spo['object']  # a dict
+        objects = list(object_dict.values()) # 装入当前这个 spo 中的所有object        
+        object_types = list(spo['object_type'].values())
+        for item in zip(objects,object_types):
+            object,object_type = item
+            object_val_tokens = tokenizer.tokenize(object)
+            object_len = len(object_val_tokens)                      
+            # 遍历找出下标
+            # TODO:这里其实存在一个问题，就是如果 subject 在text中多次出现，那么该怎么办？ => 照标不误
+            for i,word in enumerate(tokens): 
+                if tokens[i:i+object_len] == object_val_tokens:
+                    labels[i] = object_map[object_type] # 'B_图书作品'
+                    for j in range(i+1,i+object_len):
+                        labels[j] = 1 # 'I'
+                    break
     return labels
 
 
@@ -300,8 +319,11 @@ def convert_example_to_subject_feature(
         tokenizer:BertTokenizer,
         chineseandpunctuationextractor: ChineseAndPunctuationExtractor,
         subject_map,
+        object_map,
         max_length: Optional[int]=512,
-        pad_to_max_length: Optional[bool]=None):
+        pad_to_max_length: Optional[bool]=None,
+        is_train = False # 是否在训练模式
+        ):
     spo_list = example['spo_list'] if "spo_list" in example.keys() else None
     text_raw = example['text']
 
@@ -337,8 +359,8 @@ def convert_example_to_subject_feature(
     # initialize tag
     # 这里的labels 就是一个一维数组
     labels = [0 for i in range(seq_len)] 
-    if spo_list is not None: 
-        labels = parse_subject_label(spo_list, subject_map, tokens, tokenizer)
+    if spo_list is not None and is_train: 
+        labels = parse_subject_label(spo_list, subject_map, tokens, tokenizer,object_map)
 
     # add [CLS] and [SEP] token, they are tagged into "O" for outside
     if seq_len > max_length - 2: # 这里的逻辑就是：如果seq_len 超过了最大长度，就截断
@@ -360,7 +382,13 @@ def convert_example_to_subject_feature(
         attention_mask.append(0) 
     token_ids = tokenizer.convert_tokens_to_ids(tokens)
 
-    temp = tokenizer(text_raw,return_tensors="pt",return_offsets_mapping= True,max_length=128)
+    temp = tokenizer(text_raw,
+                    return_tensors="pt",
+                    return_offsets_mapping= True,
+                    max_length=128,                     
+                    padding="max_length",
+                    truncation=True
+                    )
     offset_mapping = temp["offset_mapping"] # 得到offset 
     offset_mapping.squeeze_()
     # 为什么这里喜欢用np.array?
@@ -646,6 +674,7 @@ class DataCollator:
         return (batched_input_ids, seq_lens, tok_to_orig_start_index,
                 tok_to_orig_end_index, labels)
 
+# predict 模式下的 SubjectDataCollator
 @dataclass
 class SubjectDataCollator:
     """
@@ -667,6 +696,31 @@ class SubjectDataCollator:
         return (batched_input_ids,token_typed_ids,attention_mask, labels,origin_info)
 
 
+# train 模式下的subject Data collator
+@dataclass
+class TrainSubjectDataCollator:
+    """
+    Collator for DuIE.
+    """
+    def __call__(self, examples):
+        batched_input_ids = np.stack([x['input_ids'] for x in examples])        
+        attention_mask = np.stack(
+            [x['attention_mask'] for x in examples])
+        token_typed_ids = np.stack(
+            [x['token_type_ids'] for x in examples])
+        labels = np.stack([x['labels'] for x in examples])     
+        origin_info = np.stack(x['origin_info'] for x in examples)   
+        offset_mapping = np.stack([x['offset_mapping'] for x in examples])
+
+
+        batched_input_ids = t.tensor(batched_input_ids).cuda()
+        token_typed_ids = t.tensor(token_typed_ids).cuda()
+        attention_mask = t.tensor(attention_mask).cuda()        
+        labels = t.tensor(labels).cuda()
+
+        return (batched_input_ids,token_typed_ids,attention_mask,origin_info, labels,offset_mapping)
+
+
 @dataclass
 class PredictSubjectDataCollator:
     """
@@ -680,7 +734,7 @@ class PredictSubjectDataCollator:
             [x['token_type_ids'] for x in examples])
         
         origin_info = np.stack(x['origin_info'] for x in examples)
-        offset_mapping = np.stack(x['offset_mapping'] for x in examples)
+        offset_mapping = np.stack([x['offset_mapping'] for x in examples])
         batched_input_ids = t.tensor(batched_input_ids).cuda()
         token_typed_ids = t.tensor(token_typed_ids).cuda()
         attention_mask = t.tensor(attention_mask).cuda()        
@@ -689,25 +743,30 @@ class PredictSubjectDataCollator:
 
 
 """
-功能：这部分数据的加载 是为了预测 subject 
+功能：这部分数据的加载 是为了预测 subject，仅是用于train部分，因为不想把 origin_info 数据也占用内存，所以这里
+train  模式 和 predict 模式没有共用一个类
+
 """
-class SubjectDataset(Dataset):    
+class TrainSubjectDataset(Dataset):
     def __init__(
             self, 
             input_ids ,
             token_type_ids ,
             attention_mask,
             seq_lens,
+            origin_info,
             labels,
-            origin_info):
-        super(SubjectDataset, self).__init__()
+            offset_mapping
+            ):
+        super(TrainSubjectDataset, self).__init__()
 
         self.input_ids = input_ids
         self.seq_lens = seq_lens        
         self.labels = labels
         self.token_type_ids = token_type_ids
-        self.attention_mask = attention_mask
         self.origin_info = origin_info
+        self.attention_mask = attention_mask
+        self.offset_mapping = offset_mapping
 
     def __len__(self):
         if isinstance(self.input_ids, np.ndarray):
@@ -721,9 +780,10 @@ class SubjectDataset(Dataset):
             "token_type_ids":np.array(self.token_type_ids[item]),
             "attention_mask":np.array(self.attention_mask[item]),
             "seq_lens": np.array(self.seq_lens[item]),
+            "origin_info":self.origin_info[item],
             # If model inputs is generated in `collate_fn`, delete the data type casting.
             "labels": np.array(self.labels[item], dtype=np.long),
-            "origin_info":self.origin_info[item],
+            "offset_mapping":np.array(self.offset_mapping[item])
         }
     
     @classmethod
@@ -734,20 +794,23 @@ class SubjectDataset(Dataset):
                   pad_to_max_length: Optional[bool]=None
                   ):
                   
-        assert os.path.exists(file_path) and os.path.isfile(
-            file_path), f"{file_path} dose not exists or is not a file."
-        subject_map_path = os.path.join(
-            os.path.dirname(file_path), "subject2id.json")
-        assert os.path.exists(subject_map_path) and os.path.isfile(
-            subject_map_path
-        ), f"{subject_map_path} dose not exists or is not a file."
+        assert os.path.exists(file_path) and os.path.isfile(file_path), f"{file_path} dose not exists or is not a file."
+        subject_map_path = os.path.join(os.path.dirname(file_path), "subject2id.json")
+        assert os.path.exists(subject_map_path) and os.path.isfile(subject_map_path), f"{subject_map_path} dose not exists or is not a file."
         with open(subject_map_path, 'r', encoding='utf8') as fp:
             subject_map = json.load(fp)
+
+        # Reads object_map.
+        object_map_path = os.path.join(os.path.dirname(file_path), "object2id.json")        
+        assert os.path.exists(object_map_path) and os.path.isfile(object_map_path),f"{object_map_path} dose not exists or is not a file."        
+        with open(object_map_path, 'r', encoding='utf8') as fp:
+            object_map = json.load(fp)
+
         chineseandpunctuationextractor = ChineseAndPunctuationExtractor()
 
         # 初始化赋空值
-        input_ids, seq_lens, attention_mask, token_type_ids, labels = (
-            [] for _ in range(5))
+        input_ids, seq_lens, attention_mask, token_type_ids, labels, offset_mapping= (
+            [] for _ in range(6))
         origin_info = [] # 原始文本信息
         dataset_scale = sum(1 for line in open(file_path, 'r'))
         print(f"Preprocessing data, loaded from %s" % file_path)
@@ -757,7 +820,7 @@ class SubjectDataset(Dataset):
                 example = json.loads(line)
                 input_feature = convert_example_to_subject_feature(
                     example, tokenizer, chineseandpunctuationextractor,
-                    subject_map, max_length, pad_to_max_length)
+                    subject_map,object_map, max_length, pad_to_max_length,is_train=True)
                 
                 # 得到所有的训练数据
                 input_ids.append(input_feature.input_ids)
@@ -766,13 +829,15 @@ class SubjectDataset(Dataset):
                 token_type_ids.append(input_feature.token_type_ids)
                 attention_mask.append(input_feature.attention_mask)
                 origin_info.append(example)
+                offset_mapping.append(input_feature.offset_mapping)
         
         examples = cls(input_ids,
                        token_type_ids=token_type_ids,
                        attention_mask=attention_mask,
                        seq_lens=seq_lens,
+                       origin_info = origin_info,
                        labels=labels,
-                       origin_info=origin_info
+                       offset_mapping = offset_mapping                   
                        )
         return examples
 
@@ -829,6 +894,13 @@ class PredictSubjectDataset(Dataset):
         ), f"{subject_map_path} dose not exists or is not a file."
         with open(subject_map_path, 'r', encoding='utf8') as fp:
             subject_map = json.load(fp)
+
+        # Reads object_map.
+        object_map_path = os.path.join(os.path.dirname(file_path), "object2id.json")        
+        assert os.path.exists(object_map_path) and os.path.isfile(object_map_path),f"{object_map_path} dose not exists or is not a file."        
+        with open(object_map_path, 'r', encoding='utf8') as fp:
+            object_map = json.load(fp)
+
         chineseandpunctuationextractor = ChineseAndPunctuationExtractor()
 
         # 初始化赋空值
@@ -842,7 +914,7 @@ class PredictSubjectDataset(Dataset):
                 example = json.loads(line)
                 input_feature = convert_example_to_subject_feature(
                     example, tokenizer, chineseandpunctuationextractor,
-                    subject_map, max_length, pad_to_max_length)
+                    subject_map,object_map, max_length, pad_to_max_length,is_train=False)
                 
                 # 得到所有的训练数据
                 input_ids.append(input_feature.input_ids)
@@ -944,7 +1016,7 @@ class ObjectDataset(Dataset):
             token_type_ids ,
             attention_mask,            
             labels):
-        super(SubjectDataset, self).__init__()
+        super(ObjectDataset, self).__init__()
 
         self.input_ids = input_ids                
         self.token_type_ids = token_type_ids
@@ -1112,7 +1184,8 @@ def from_dict2_relation(batch_subjects,
     ]
     }
     '''
-    if batch_subjects is None and batch_objects is None: # train 模式        
+    # train 模式  
+    if batch_subjects is None and batch_objects is None:       
         for item in zip(batch_origin_info,batch_subjects):
             example, subjects = item
             # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条   
