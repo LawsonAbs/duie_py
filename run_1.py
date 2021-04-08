@@ -2,12 +2,11 @@
 运行subject预测的模型
 """
 
-from models import RelationModel, SubjectModel,ObjectModel
 import logging
+from models import RelationModel, SubjectModel,ObjectModel
 import argparse
 import os
 import random
-import time
 import math
 import json
 from functools import partial
@@ -27,11 +26,14 @@ from torch.utils.data import BatchSampler,SequentialSampler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from transformers import BertTokenizerFast, BertForSequenceClassification
 
-from data_loader import DuIEDataset, DataCollator, ObjectDataset,SubjectDataset,SubjectDataCollator
+from data_loader import DuIEDataset, DataCollator, ObjectDataset,TrainSubjectDataset,TrainSubjectDataCollator
 from data_loader import PredictSubjectDataset,PredictSubjectDataCollator
 from utils import decode_subject,decode_object, decoding, find_entity, get_precision_recall_f1, write_prediction_results
 
 from data_loader import from_dict,from_dict2_relation
+from predict import visualize_subject
+from metric import cal_subject_metric
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--do_train", action='store_true', default=False, help="do train")
@@ -53,15 +55,48 @@ args = parser.parse_args()
 # yapf: enable
 
 
+
 # Reads subject_map.
 subject_map_path = os.path.join(args.data_path, "subject2id.json")
 if not (os.path.exists(subject_map_path) and os.path.isfile(subject_map_path)):
     sys.exit("{} dose not exists or is not a file.".format(subject_map_path))
 with open(subject_map_path, 'r', encoding='utf8') as fp:
     subject_map = json.load(fp)
- 
+
+# Reads object_map.
+object_map_path = os.path.join(args.data_path, "object2id.json")
+if not (os.path.exists(object_map_path) and os.path.isfile(object_map_path)):
+    sys.exit("{} dose not exists or is not a file.".format(object_map_path))
+with open(object_map_path, 'r', encoding='utf8') as fp:
+    object_map = json.load(fp)
+
+
+# Reads label_map.
+relation_map_path = os.path.join(args.data_path, "predicate2id.json")
+if not (os.path.exists(relation_map_path) and os.path.isfile(relation_map_path)):
+    sys.exit("{} dose not exists or is not a file.".format(relation_map_path))
+with open(relation_map_path, 'r', encoding='utf8') as fp:
+    relation_map = json.load(fp)    
 
 subject_class_num =  len(subject_map.keys()) # 得出subject的class num
+object_class_num = len(object_map.keys())  # 得出object 的class num    
+relation_class_num = len(relation_map.keys())# 得出 relation 的 个数
+
+
+
+# Reads subject_map.
+id2subject_map_path = os.path.join(args.data_path, "id2subject.json")
+if not (os.path.exists(id2subject_map_path) and os.path.isfile(id2subject_map_path)):
+    sys.exit("{} dose not exists or is not a file.".format(id2subject_map_path))
+with open(id2subject_map_path, 'r', encoding='utf8') as fp:
+    id2subject_map = json.load(fp)
+
+# Reads object_map.
+id2object_map_path = os.path.join(args.data_path, "id2object.json")
+if not (os.path.exists(id2object_map_path) and os.path.isfile(id2object_map_path)):
+    sys.exit("{} dose not exists or is not a file.".format(id2object_map_path))
+with open(id2object_map_path, 'r', encoding='utf8') as fp:
+    id2object_map = json.load(fp)
 
 
 def set_random_seed(seed):
@@ -76,15 +111,66 @@ log_name = "model_subject_" + curTime + '.log'
 logging.basicConfig(format='%(asctime)s - %(levelname)s -%(name)s - %(message)s',
                     datefmt='%m/%d%/%Y %H:%M:%S',
                     level=logging.INFO,
-                    filename="./log/" + log_name,
+                    filename="/home/lawson/program/DuIE_py/" + log_name,
+                    filemode='a', # 写模式
                     )
-logger = logging.getLogger("duie")
+logger = logging.getLogger("model_subject")
+
+"""
+功能： 评测部分
+"""
+def evaluate(model_subject,dev_data_loader,criterion):
+    # Does predictions.
+    logger.info("\n====================start  evaluating ====================")   
+    tokenizer = BertTokenizerFast.from_pretrained("/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch")
+
+    model_subject.eval()
+    # 将subject的预测结果写到文件中
+    file_path = "/home/lawson/program/DuIE_py/data/subject_predict000.txt"
+    if os.path.exists(file_path):# 因为下面是追加写入到文件中，所以
+        os.remove(file_path)
+    total_loss = 0 # 总损失
+    invalid_num = 0 # 预测失败的个数
+    with t.no_grad():        
+        for batch in tqdm(dev_data_loader):
+            # origin_info 是原始的json格式的信息
+            input_ids,token_type_ids,attention_mask, batch_origin_info,labels,offset_mapping = batch
+            # labels size = [batch_size,max_seq_length]
+            logits_1 = model_subject(input_ids=input_ids,
+                                    token_type_ids=token_type_ids,
+                                    attention_mask=attention_mask
+                                    )
+            #logits size [batch_size,max_seq_len,class_num]  
+            temp = logits_1.view(-1,subject_class_num) 
+            labels = labels.view(-1)
+            cur_loss = criterion(temp, labels)
+            total_loss += cur_loss
+            # 得到预测到的 subject
+            # temp = get_rid_of_number_in_str(origin_info[0]['text'])
+            # origin_info[0]['text'] = temp
+            batch_subjects, batch_subject_labels = decode_subject(logits_1,
+                                                                  id2subject_map,
+                                                                  input_ids,
+                                                                  tokenizer,
+                                                                  batch_origin_info,
+                                                                  offset_mapping
+                                                                  )
+            # 追加写入到文件中
+            visualize_subject(file_path, batch_subjects, batch_subject_labels)
+            # 需要判断 batch_subjects 是空的情况，最好能够和普通subjects 一样处理        
+            if(len(batch_subjects[0]) == 0):
+                #print("----- 未预测到subject ----------")
+                invalid_num+=1            
+                continue
+        avg_loss = total_loss / len(dev_data_loader)
+        logger.info(f"平均损失是：{avg_loss}")
+        logger.info(f"未预测到的subject 数目是：{invalid_num}")
 
 
 def do_train():
     # ========================== subtask 1. 预测subject ==========================
     # 这一部分我用一个 NER 任务来做，但是原任务用的是 start + end 的方式，原理是一样的
-    # ========================== =================== ==========================    
+    # ========================== =================== =============================
     name_or_path = "/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch"
     model_subject = SubjectModel(name_or_path,768,out_fea=subject_class_num)    
     model_subject = model_subject.cuda()    
@@ -92,7 +178,7 @@ def do_train():
     criterion = nn.CrossEntropyLoss() # 使用交叉熵计算损失
 
     # Loads dataset.
-    train_dataset = SubjectDataset.from_file(
+    train_dataset = TrainSubjectDataset.from_file(
         os.path.join(args.data_path, 'train_data.json'),
         tokenizer,
         args.max_seq_length,
@@ -105,7 +191,7 @@ def do_train():
     #     shuffle=True,
     #     drop_last=True 
     #     )
-    collator = SubjectDataCollator()
+    collator = TrainSubjectDataCollator()
     train_data_loader = DataLoader(        
         dataset=train_dataset,
         #batch_sampler=train_batch_sampler,
@@ -113,20 +199,22 @@ def do_train():
         collate_fn=collator, # 重写一个 collator
         )
     
-    # =============== 暂时不用 dev 的数据 ===============
-    # dev_file_path = os.path.join(args.data_path, 'dev_data.json')
-    # dev_dataset = SubjectDataset.from_file(dev_file_path,
-    #                                      tokenizer,
-    #                                      args.max_seq_length,
-    #                                      True
-    #                                      )
+    # Loads dataset.
+    # 放在外面是为了避免每次 evaluate 的时候都加载一遍
+    # dev 数据集也是用 TrainSubjectDataset 的原因是：想计算loss
+    dev_dataset = TrainSubjectDataset.from_file(
+        #os.path.join(args.data_path, 'train_data_2.json'),
+        os.path.join(args.data_path, 'dev_data.json'),
+        tokenizer,
+        args.max_seq_length,
+        True
+        )
         
-    # dev_data_loader = DataLoader(
-    #     dataset=dev_dataset,
-    #     batch_size= args.batch_size,
-    #     #batch_sampler=dev_batch_sampler,
-    #     collate_fn=collator,   
-    # )
+    dev_data_loader = DataLoader(        
+        dataset=dev_dataset,
+        batch_size=args.batch_size,
+        collate_fn=collator, # 重写一个 collator
+        )
     
     # 这里为什么只对一部分的参数做这个decay 操作？ 这个decay 操作有什么作用？
     # Generate parameter names needed to perform weight decay.
@@ -152,15 +240,17 @@ def do_train():
     # Starts training.
     global_step = 0
     logging_steps = 50
-    save_steps = 10000
+    save_steps = 5000
     tic_train = time.time()
-    for epoch in range(args.num_train_epochs):
-        print("\n=====start training of %d epochs=====" % epoch)
+    step = 0
+    for epoch in tqdm(range(args.num_train_epochs)):
+        logger.info(f"\n=====start training of {epoch}=====")
         tic_epoch = time.time()
         # 设置为训练模式
         model_subject.train() # 预测subject        
-        for step, batch in tqdm(enumerate(train_data_loader)):
-            input_ids,token_type_ids,attention_mask, labels,origin_info = batch
+        for batch in tqdm(train_data_loader):
+            step += 1
+            input_ids,token_type_ids,attention_mask,batch_origin_info, labels,offset_mappings = batch
             # labels size = [batch_size,max_seq_length]
             logits_1 = model_subject(input_ids=input_ids,
                                    token_type_ids=token_type_ids,
@@ -180,29 +270,29 @@ def do_train():
             # 打日志
             if global_step % logging_steps == 0 :
                 logger.info(
-                    "epoch: %d / %d, steps: %d / %d, loss: %f , speed: %.2f step/s"
-                    % (epoch, args.num_train_epochs, step, steps_by_epoch,
-                       loss_item, logging_steps / (time.time() - tic_train))
-                       )
+                    f"epoch:{epoch}/{args.num_train_epochs},\
+                    steps:{step}/{steps_by_epoch}, loss:{loss_item},\
+                    speed: {logging_steps / (time.time() - tic_train)} step/s")
                 tic_train = time.time()
             
-            # 报存模型
-            if global_step % save_steps == 0 and global_step != 0 :
-                if (not args.n_gpu > 1) :
-                    logger.info("saving checkpoing model_subject_%d.pdparams to %s " %
-                          (global_step, args.output_dir))
-                    t.save(model_subject.state_dict(),
-                                os.path.join(args.output_dir,
-                                             "model_subject_%d_roberta.pdparams" % global_step))
+            # 保存模型
+            if global_step % save_steps == 0 and global_step != 0 :                
+                logger.info("saving checkpoing model_subject_{global_step}.pdparams to {args.output_dir}")
+                cur_model_name = os.path.join(args.output_dir,"model_subject_%d_roberta.pdparams" % global_step)
+                t.save(model_subject.state_dict(),cur_model_name)
+
+                # 使用dev 数据集评测模型效果
+                evaluate(model_subject,dev_data_loader,criterion)                
+                recall,precision,f1 = cal_subject_metric(dev_data_file_path = "/home/lawson/program/DuIE_py/data/dev_data.json",
+                                    pred_file_path = "/home/lawson/program/DuIE_py/data/subject_predict000.txt")
+                logger.info(f"recall = {recall}, precision = {precision}, f1 = {f1}")
                 model_subject.train()
 
             global_step += 1
-
         t.save(model_subject.state_dict(),
             os.path.join(args.output_dir,
                             "model_subject_%d_roberta.pdparams" % global_step))
-        logger.info("\n=====training complete=====")
-
+    logger.info("\n=====training complete=====")
 
 
 if __name__ == "__main__":
@@ -210,5 +300,5 @@ if __name__ == "__main__":
     # 指定GPU设备    
     device = t.device("cuda" if t.cuda.is_available() and not args.n_gpu else "cpu")    
 
-    if args.do_train:        
+    if args.do_train:
         do_train()
