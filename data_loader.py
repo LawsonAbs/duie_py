@@ -35,17 +35,18 @@ InputFeature = collections.namedtuple("InputFeature", [
 ])
 
 SubjectInputFeature = collections.namedtuple("SubjectInputFeature", [
-    "input_ids","token_type_ids","attention_mask","seq_len", "labels"
+    "input_ids","token_type_ids","attention_mask","seq_len", "labels", "offset_mapping"
 ])
 
 
 ObjectInputFeature = collections.namedtuple("ObjectInputFeature", [
-    "input_ids","token_type_ids","attention_mask","seq_len", "labels"
+    "input_ids","token_type_ids","attention_mask","seq_len", "labels","offset_mapping"
 ])
 
 # TODO：弄清楚这里的语法是什么
 RelationInputFeature = collections.namedtuple("RelationInputFeature", [
-    "input_ids","token_type_ids","attention_mask","label"
+    "input_ids","token_type_ids","attention_mask","label",
+    #"offset_mapping"
 ])
 
 
@@ -317,18 +318,12 @@ def convert_example_to_subject_feature(
     if buff != "":
         sub_text.append(buff)
 
-    tok_to_orig_start_index = []
-    tok_to_orig_end_index = []
-    orig_to_tok_index = []
     tokens = []
     text_tmp = ''    
-    for (i, token) in enumerate(sub_text):
-        orig_to_tok_index.append(len(tokens))
-        sub_tokens = tokenizer._tokenize(token)
+    for (i, token) in enumerate(sub_text):    
+        sub_tokens = tokenizer.tokenize(token)
         text_tmp += token
         for sub_token in sub_tokens:
-            tok_to_orig_start_index.append(len(text_tmp) - len(token))
-            tok_to_orig_end_index.append(len(text_tmp) - 1)
             tokens.append(sub_token)
             if len(tokens) >= max_length - 2:
                 break
@@ -365,6 +360,9 @@ def convert_example_to_subject_feature(
         attention_mask.append(0) 
     token_ids = tokenizer.convert_tokens_to_ids(tokens)
 
+    temp = tokenizer(text_raw,return_tensors="pt",return_offsets_mapping= True,max_length=128)
+    offset_mapping = temp["offset_mapping"] # 得到offset 
+    offset_mapping.squeeze_()
     # 为什么这里喜欢用np.array?
     return SubjectInputFeature(
         input_ids=np.array(token_ids),
@@ -372,7 +370,7 @@ def convert_example_to_subject_feature(
         attention_mask = np.array(attention_mask),
         seq_len=np.array(seq_len),
         labels=np.array(labels),
-
+        offset_mapping = np.array(offset_mapping)
         )
 
 
@@ -384,8 +382,7 @@ def convert_example_to_object_feature(
         tokenizer:BertTokenizer,
         chineseandpunctuationextractor: ChineseAndPunctuationExtractor,
         subject_map,
-        max_length: Optional[int]=512,
-        pad_to_max_length: Optional[bool]=None
+        max_length: Optional[int]=512        
         ):
     spo_list = example['spo_list'] if "spo_list" in example.keys() else None
     text_raw = example['text']
@@ -406,7 +403,7 @@ def convert_example_to_object_feature(
     tokens = []
     text_tmp = ''    
     for (i, token) in enumerate(sub_text):
-        sub_tokens = tokenizer._tokenize(token)
+        sub_tokens = tokenizer.tokenize(token)
         text_tmp += token
         for sub_token in sub_tokens:
             tokens.append(sub_token)
@@ -444,13 +441,19 @@ def convert_example_to_object_feature(
         token_type_ids.append(0)
         attention_mask.append(0) 
     token_ids = tokenizer.convert_tokens_to_ids(tokens)
-    
+    temp = tokenizer(text_raw,
+                    return_tensors="pt",
+                  return_offsets_mapping= True,
+                  max_length=128)
+    offset_mapping = temp["offset_mapping"]
+    offset_mapping.squeeze_()
     return ObjectInputFeature(
         input_ids=np.array(token_ids),
         token_type_ids = np.array(token_type_ids),
         attention_mask = np.array(attention_mask),
         seq_len=np.array(seq_len),
-        labels=np.array(labels)
+        labels=np.array(labels),
+        offset_mapping=np.array(offset_mapping)
         )
 
 
@@ -481,7 +484,7 @@ def convert_example_to_relation_feature(
     tokens = []
     text_tmp = ''    
     for (i, token) in enumerate(sub_text):
-        sub_tokens = tokenizer._tokenize(token)
+        sub_tokens = tokenizer.tokenize(token)
         text_tmp += token
         for sub_token in sub_tokens:
             tokens.append(sub_token)
@@ -517,12 +520,18 @@ def convert_example_to_relation_feature(
         token_type_ids.append(0)
         attention_mask.append(0)
     token_ids = tokenizer.convert_tokens_to_ids(tokens)
-    
+    # temp = tokenizer(text_raw,
+    #                 return_tensors="pt",
+    #               return_offsets_mapping= True,
+    #               max_length=128)
+    # offset_mapping = temp["offset_mapping"]
+    # offset_mapping.squeeze_()
     return RelationInputFeature(
         input_ids=np.array(token_ids),
         token_type_ids = np.array(token_type_ids),
         attention_mask = np.array(attention_mask),        
-        label = label
+        label = label,
+    #    offset_mapping= np.array(offset_mapping)
         )
 
 
@@ -671,11 +680,12 @@ class PredictSubjectDataCollator:
             [x['token_type_ids'] for x in examples])
         
         origin_info = np.stack(x['origin_info'] for x in examples)
+        offset_mapping = np.stack(x['offset_mapping'] for x in examples)
         batched_input_ids = t.tensor(batched_input_ids).cuda()
         token_typed_ids = t.tensor(token_typed_ids).cuda()
         attention_mask = t.tensor(attention_mask).cuda()        
 
-        return (batched_input_ids,token_typed_ids,attention_mask, origin_info)
+        return (batched_input_ids,token_typed_ids,attention_mask, origin_info,offset_mapping)
 
 
 """
@@ -776,7 +786,8 @@ class PredictSubjectDataset(Dataset):
             input_ids ,
             token_type_ids ,
             attention_mask,
-            origin_info
+            origin_info,
+            offset_mapping
             ):
         super(PredictSubjectDataset, self).__init__()
 
@@ -784,6 +795,7 @@ class PredictSubjectDataset(Dataset):
         self.token_type_ids = token_type_ids
         self.attention_mask = attention_mask
         self.origin_info = origin_info
+        self.offset_mapping = offset_mapping
 
     def __len__(self):
         if isinstance(self.input_ids, np.ndarray):
@@ -796,7 +808,8 @@ class PredictSubjectDataset(Dataset):
             "input_ids": np.array(self.input_ids[item]),
             "token_type_ids":np.array(self.token_type_ids[item]),
             "attention_mask":np.array(self.attention_mask[item]),
-            "origin_info":self.origin_info[item]     
+            "origin_info":self.origin_info[item],
+            "offset_mapping":np.array(self.offset_mapping[item])
         }
     
     @classmethod
@@ -819,8 +832,8 @@ class PredictSubjectDataset(Dataset):
         chineseandpunctuationextractor = ChineseAndPunctuationExtractor()
 
         # 初始化赋空值
-        input_ids, seq_lens, attention_mask, token_type_ids, labels = (
-            [] for _ in range(5))
+        input_ids, seq_lens, attention_mask, token_type_ids, labels,offset_mapping = (
+            [] for _ in range(6))
         origin_info = [] # 原始文本信息        
         print(f"Preprocessing data, loaded from %s" % file_path)
         with open(file_path, "r", encoding="utf-8") as fp:
@@ -837,11 +850,13 @@ class PredictSubjectDataset(Dataset):
                 token_type_ids.append(input_feature.token_type_ids)
                 attention_mask.append(input_feature.attention_mask)
                 origin_info.append(example)
+                offset_mapping.append(input_feature.offset_mapping)
         
         examples = cls(input_ids,
                        token_type_ids=token_type_ids,
                        attention_mask=attention_mask,
-                       origin_info=origin_info                 
+                       origin_info=origin_info,
+                    offset_mapping= offset_mapping
                        )
         return examples
 
@@ -994,18 +1009,17 @@ class ObjectDataset(Dataset):
 
 def from_dict(batch_subjects,
               batch_origin_dict,              
-              tokenizer: BertTokenizer,
-              max_length: Optional[int] = 512,
-              pad_to_max_length: Optional[bool] = None
+              tokenizer: BertTokenizer,              
+              max_length: Optional[int] = 512                            
               ):
 
     with open("./data/object2id.json", 'r', encoding='utf8') as fp:
         object_map = json.load(fp)
     chineseandpunctuationextractor = ChineseAndPunctuationExtractor()
 
-    # 初始化赋空值
-    input_ids, attention_mask, token_type_ids, labels = (
-        [] for _ in range(4))
+    # 初始化赋空值  object_origin_info 是经过拼接subject后得到的 model_object 使用的原样本
+    input_ids, attention_mask, token_type_ids, labels, object_origin_info,offset_mapping = (
+        [] for _ in range(6))
     if batch_subjects is None: # in train
         for example in batch_origin_dict:            
             # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条                
@@ -1014,7 +1028,7 @@ def from_dict(batch_subjects,
             for example in examples:
                 input_feature = convert_example_to_object_feature(
                     example, tokenizer, chineseandpunctuationextractor,
-                    object_map, max_length, pad_to_max_length)
+                    object_map, max_length)
                 
                 # 得到所有的训练数据
                 input_ids.append(input_feature.input_ids)            
@@ -1027,20 +1041,22 @@ def from_dict(batch_subjects,
         # batch_origin_dict 是原数据 [{},{} ... {}]
         for item in zip(batch_origin_dict,batch_subjects):
             example,subjects = item 
-            # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条                
+            # 这里的example 是原训练数据中的单条语句，需要使用for 循环，将其和预测得到的 subject 拼接成多条
             # 先预处理，将一个example 变成(在其前追加subject+['SEP'])变为多个 example
             examples = process_example(example,subjects)
             for example in examples:
                 input_feature = convert_example_to_object_feature(
                     example, tokenizer, chineseandpunctuationextractor,
-                    object_map, max_length, pad_to_max_length)
-                
+                    object_map, max_length )
+                object_origin_info.append(example['text']) # 加入原文本
                 # 得到所有的训练数据
                 input_ids.append(input_feature.input_ids)            
                 labels.append(input_feature.labels)
                 token_type_ids.append(input_feature.token_type_ids)
-                attention_mask.append(input_feature.attention_mask)  
-    return (input_ids,token_type_ids,attention_mask,labels)
+                attention_mask.append(input_feature.attention_mask)
+                offset_mapping.append(input_feature.offset_mapping)
+
+    return (input_ids,token_type_ids,attention_mask,labels,object_origin_info,offset_mapping)
 
 
 """
@@ -1061,9 +1077,8 @@ def from_dict2_relation(batch_subjects,
     chineseandpunctuationextractor = ChineseAndPunctuationExtractor()
 
     # 初始化赋空值
-    input_ids, attention_mask, token_type_ids, labels = (
-        [] for _ in range(4))
-    
+    input_ids, attention_mask, token_type_ids, labels,offset_mapping = (
+        [] for _ in range(5))
     
     
     ''' example 中的是数据格式如下：
@@ -1135,6 +1150,7 @@ def from_dict2_relation(batch_subjects,
                 labels.append(input_feature.label)
                 token_type_ids.append(input_feature.token_type_ids)
                 attention_mask.append(input_feature.attention_mask)  
+                #offset_mapping.append(input_feature.offset_mapping)
     return (input_ids,token_type_ids,attention_mask,labels)
 
 
