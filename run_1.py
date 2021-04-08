@@ -25,7 +25,7 @@ from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler 
 from torch.utils.data import BatchSampler,SequentialSampler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from transformers import BertTokenizer, BertForSequenceClassification
+from transformers import BertTokenizerFast, BertForSequenceClassification
 
 from data_loader import DuIEDataset, DataCollator, ObjectDataset,SubjectDataset,SubjectDataCollator
 from data_loader import PredictSubjectDataset,PredictSubjectDataCollator
@@ -70,9 +70,14 @@ def set_random_seed(seed):
     np.random.seed(seed)
     #t.seed(seed)  # 为什么torch 也要设置这个seed ？
 
+import time
+curTime = time.strftime("%m%d_%H%M%S", time.localtime())
+log_name = "model_subject_" + curTime + '.log'
 logging.basicConfig(format='%(asctime)s - %(levelname)s -%(name)s - %(message)s',
                     datefmt='%m/%d%/%Y %H:%M:%S',
-                    level=logging.INFO)
+                    level=logging.INFO,
+                    filename="./log/" + log_name,
+                    )
 logger = logging.getLogger("duie")
 
 
@@ -80,10 +85,10 @@ def do_train():
     # ========================== subtask 1. 预测subject ==========================
     # 这一部分我用一个 NER 任务来做，但是原任务用的是 start + end 的方式，原理是一样的
     # ========================== =================== ==========================    
-    name_or_path = "/home/lawson/pretrain/bert-base-chinese"
+    name_or_path = "/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch"
     model_subject = SubjectModel(name_or_path,768,out_fea=subject_class_num)    
     model_subject = model_subject.cuda()    
-    tokenizer = BertTokenizer.from_pretrained("/home/lawson/pretrain/bert-base-chinese")
+    tokenizer = BertTokenizerFast.from_pretrained("/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch")
     criterion = nn.CrossEntropyLoss() # 使用交叉熵计算损失
 
     # Loads dataset.
@@ -108,19 +113,20 @@ def do_train():
         collate_fn=collator, # 重写一个 collator
         )
     
-    dev_file_path = os.path.join(args.data_path, 'dev_data.json')
-    dev_dataset = SubjectDataset.from_file(dev_file_path,
-                                         tokenizer,
-                                         args.max_seq_length,
-                                         True
-                                         )
+    # =============== 暂时不用 dev 的数据 ===============
+    # dev_file_path = os.path.join(args.data_path, 'dev_data.json')
+    # dev_dataset = SubjectDataset.from_file(dev_file_path,
+    #                                      tokenizer,
+    #                                      args.max_seq_length,
+    #                                      True
+    #                                      )
         
-    dev_data_loader = DataLoader(
-        dataset=dev_dataset,
-        batch_size= args.batch_size,
-        #batch_sampler=dev_batch_sampler,
-        collate_fn=collator,   
-    )
+    # dev_data_loader = DataLoader(
+    #     dataset=dev_dataset,
+    #     batch_size= args.batch_size,
+    #     #batch_sampler=dev_batch_sampler,
+    #     collate_fn=collator,   
+    # )
     
     # 这里为什么只对一部分的参数做这个decay 操作？ 这个decay 操作有什么作用？
     # Generate parameter names needed to perform weight decay.
@@ -153,7 +159,7 @@ def do_train():
         tic_epoch = time.time()
         # 设置为训练模式
         model_subject.train() # 预测subject        
-        for step, batch in enumerate(train_data_loader):
+        for step, batch in tqdm(enumerate(train_data_loader)):
             input_ids,token_type_ids,attention_mask, labels,origin_info = batch
             # labels size = [batch_size,max_seq_length]
             logits_1 = model_subject(input_ids=input_ids,
@@ -171,51 +177,31 @@ def do_train():
             optimizer.zero_grad()
             loss_item = loss.item()
 
+            # 打日志
             if global_step % logging_steps == 0 :
-                print(
+                logger.info(
                     "epoch: %d / %d, steps: %d / %d, loss: %f , speed: %.2f step/s"
                     % (epoch, args.num_train_epochs, step, steps_by_epoch,
                        loss_item, logging_steps / (time.time() - tic_train))
                        )
                 tic_train = time.time()
-            '''
+            
+            # 报存模型
             if global_step % save_steps == 0 and global_step != 0 :
-                print("\n=====start evaluating ckpt of %d steps=====" %
-                      global_step)
-                precision, recall, f1 = evaluate(
-                    model_subject, criterion, dev_data_loader, dev_file_path, "eval")
-                print("precision: %.2f\t recall: %.2f\t f1: %.2f\t" %
-                      (100 * precision, 100 * recall, 100 * f1))
-                if (not args.n_gpu > 1) or t.distributed.get_rank() == 0:
-                    print("saving checkpoing model_subject_%d.pdparams to %s " %
+                if (not args.n_gpu > 1) :
+                    logger.info("saving checkpoing model_subject_%d.pdparams to %s " %
                           (global_step, args.output_dir))
                     t.save(model_subject.state_dict(),
                                 os.path.join(args.output_dir,
-                                             "model_subject_%d.pdparams" % global_step))
-                model_subject.train()  # back to train mode
-            '''     
-            global_step += 1
-        # tic_epoch = time.time() - tic_epoch
-        # print("epoch time footprint: %d hour %d min %d sec" %
-        #       (tic_epoch // 3600, (tic_epoch % 3600) // 60, tic_epoch % 60))
+                                             "model_subject_%d_roberta.pdparams" % global_step))
+                model_subject.train()
 
-        '''
-        # Does final evaluation.    
-        print("\n=====start evaluating last ckpt of %d steps=====" %
-                global_step)
-        precision, recall, f1 = evaluate(model_subject, 
-                                        criterion,
-                                        dev_data_loader,
-                                        dev_file_path,
-                                        "eval")
-        print("precision: %.2f\t recall: %.2f\t f1: %.2f\t" %
-                (100 * precision, 100 * recall, 100 * f1))
-        '''
+            global_step += 1
+
         t.save(model_subject.state_dict(),
             os.path.join(args.output_dir,
-                            "model_subject_%d.pdparams" % global_step)
-            )
-        print("\n=====training complete=====")
+                            "model_subject_%d_roberta.pdparams" % global_step))
+        logger.info("\n=====training complete=====")
 
 
 
