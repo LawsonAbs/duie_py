@@ -60,6 +60,7 @@ def cal_subject_metric(dev_data_file_path,pred_file_path):
     precision = correct_num / recall_num
     f1 = (2*recall*precision) / (recall+precision)
     print(f"recall = {recall}, precision = {precision}, f1 = {f1}")
+    return (recall,precision,f1)
 
 
 def cal_subject_metric_2(dev_data_file_path,pred_file_path):
