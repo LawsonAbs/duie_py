@@ -1,1 +1,12 @@
-CUDA_VISIBLE_ENVIRONMENT=0 python run_1.py --do_train --n_gpu 1 --seed 42 --data_path ./data --max_seq_length 128 --batch_size 32 --num_train_epochs 12 --learning_rate 1e-3 --warmup_ratio 0.06 --weight_decay 1e-2 --output_dir ./checkpoints
+CUDA_VISIBLE_DEVICES=1 python  /home/lawson/program/DuIE_py/run_1.py \
+                        --do_train \
+                        --n_gpu 1 \
+                         --seed 42 \
+                         --data_path /home/lawson/program/DuIE_py/data \
+                         --max_seq_length 128 \
+                         --batch_size 32 \
+                         --num_train_epochs 12 \
+                         --learning_rate 1e-3 \
+                         --warmup_ratio 0.06 \
+                         --weight_decay 1e-2 \
+                         --output_dir /home/lawson/program/DuIE_py/checkpoints
