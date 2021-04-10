@@ -21,6 +21,18 @@ import torch as t
 from torch.nn import LogSoftmax
 import numpy as np
 
+"""
+是否是英文字符或者是连字符
+"""
+def is_english_char_or_(ch):
+    if ('z' >= ch and 'a' <= ch ):
+        return True
+    if ('Z' >= ch and 'A' <= ch):
+        return True
+    if (ch == '-'):
+        return True
+    return False
+
 
 def find_entity(text_raw, id_, predictions, tok_to_orig_start_index,
                 tok_to_orig_end_index):
@@ -195,36 +207,56 @@ def get_precision_recall_f1(golden_file, predict_file):
 params:
  origin_text:原文本，用于消除不认识的字变成 [UNK] 的问题
 """
-def decode_subject(logits,id2subject_map,input_ids,tokenizer,origin_text,batch_offset_mapping):
+def decode_subject(logits,id2subject_map,input_ids,tokenizer,batch_origin_info,batch_offset_mapping):
     m = LogSoftmax(dim=-1)
     a = m(logits)
-    batch_indexs = a.argmax(2) # 在该维度找出值最大的，就是预测出来的标签    
+    batch_indexs = a.argmax(-1) # 在该维度找出值最大的，就是预测出来的标签    
     batch_subjects =[]
     batch_labels = []    
-    for i,indexs in enumerate(batch_indexs):
+    for i,indexs in enumerate(batch_indexs): # 找出index 
         offset_mapping  = batch_offset_mapping[i] # 拿到当前的offset_mapping
+        origin_info = batch_origin_info[i]
+        origin_text = origin_info['text']
         tokens = tokenizer.convert_ids_to_tokens(input_ids[i]) # 得到原字符串
         subjects = [] # 预测出最后的结果
         labels = []
         cur_subject = ""
-        for i,ind in enumerate(indexs):
+        for j,ind in enumerate(indexs):
             if ind > 1 : # 说明是一个标签的开始
-                offset = offset_mapping[i]
+                offset = offset_mapping[j]
                 left,right = tuple(offset)
+                # 判断上一个字符是否是字母结束（英文）/数字并且当前的是否不是#开头 => 需要安排一个空格
+                if (cur_subject!="" 
+                    and ( is_english_char_or_(cur_subject[-1]) or ('9'>= cur_subject[-1] and '0'<= cur_subject[-1]))
+                    and not(tokens[j].startswith("#"))
+                    and is_english_char_or_(origin_text[left]) # 如果其后也是英文 
+                    ):
+                    cur_subject+=" "
                 cur_subject += origin_text[left:right]
                 #cur_subject += origin_text[i-1] # 因为有的字无法识别，所以这里用origin_text. i-1 是因为 相比而言，origin_text 少了 [CLS]
                 cur_subject_label = id2subject_map[str(ind.item())]
             if ind == 1 and cur_subject!="": # 说明是中间部分，且 cur_subject 不为空
-                offset = offset_mapping[i]
+                offset = offset_mapping[j]
                 left,right = tuple(offset)
-                #cur_subject += tokens[i]
+                if( 
+                    (is_english_char_or_(cur_subject[-1]) or ('9'>= cur_subject[-1] and '0'<= cur_subject[-1]))
+                    and not(tokens[j].startswith("#"))
+                    and is_english_char_or_(origin_text[left]) # 如果其后也是英文
+                    ):
+                    cur_subject+=" "
                 cur_subject += origin_text[left:right]
             elif ind == 0 and cur_subject!="": # 将 cur_subject 放入到 subjects 中
                 cur_subject = cur_subject.replace("#","") # 替换掉，因为这会干扰后面的实现
-                subjects.append(cur_subject)
+                # 后处理部分之删除不符合规则的数据
+                if not is_year_month_day(cur_subject):
+                    subjects.append(cur_subject)
+                # 后处理部分之判断subject 的长度：如果长度大于1的才放进去
+                if len(cur_subject)> 1:  
+                    subjects.append(cur_subject)
                 cur_subject_label = cur_subject_label.replace("#","")
                 labels.append(cur_subject_label)
                 cur_subject = ""
+        
         batch_subjects.append(subjects)
         batch_labels.append(labels)
     # 然后再找出对应的内容    
@@ -393,7 +425,7 @@ def post_process(batch_subjects,
     
 
 """
-去除字符串中的数字，如果有连续的数字仅保留一个
+去除字符串中的数字，如果有连续的数字仅保留一个。这个函数作废，没用到。
 """
 def get_rid_of_number_in_str(string):
     deleted = [1] * len(string)
@@ -409,6 +441,56 @@ def get_rid_of_number_in_str(string):
         if deleted[i]:
             res+=string[i]
     return res
+
+
+"""后处理部分
+功能：添加书名号中的内容
+"""
+def addBookName(text):
+    target = [] 
+    cur_text = ""
+    flag = 0
+    for char in text:
+        if flag == 1 and char!='\n' and char!='》':
+            cur_text+=char
+        if char == "《":
+            flag = 1
+        elif char =="》":
+            target.append(cur_text)
+            cur_text = ""
+            flag = 0
+    return target
+
+
+"""后处理部分
+功能：删除subject 为 XXXX 年 XX 月 XX 日这种格式的数据
+"""
+def is_year_month_day(subject):
+    if ('年' in subject and '月' in subject and '日' in subject):
+        return True
+    if ('年' in subject and '月'  ):
+        return True
+    if ('月' in subject and '日' in subject):
+        return True
+    return False
+
+
+"""
+可视化subject的预测
+"""
+def visualize_subject(file_path,all_subjects,all_subject_labels):
+    with open(file_path,'w') as f:
+        for item_1 in zip(all_subjects,all_subject_labels):
+            batch_subjects,batch_subject_labels = item_1
+            for item in (zip(batch_subjects,batch_subject_labels)):
+                subjects,labels = item                
+                if len(subjects) == 0:
+                    f.write("None"+"\n")
+                else:
+                    for lines in zip(subjects,labels):
+                        subject,label = lines
+                        f.write(subject +"\t" +label+"\n")                
+                f.write("\n")
 
 
 if __name__ == "__main__":
