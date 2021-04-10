@@ -1,7 +1,6 @@
 """
 运行subject预测的模型
 """
-
 import logging
 from models import RelationModel, SubjectModel,ObjectModel
 import argparse
@@ -28,10 +27,10 @@ from transformers import BertTokenizerFast, BertForSequenceClassification
 
 from data_loader import DuIEDataset, DataCollator, ObjectDataset,TrainSubjectDataset,TrainSubjectDataCollator
 from data_loader import PredictSubjectDataset,PredictSubjectDataCollator
-from utils import decode_subject,decode_object, decoding, find_entity, get_precision_recall_f1, write_prediction_results
+from utils import decode_subject,decode_object, decoding, find_entity, get_precision_recall_f1, write_prediction_results, addBookName
 
 from data_loader import from_dict,from_dict2_relation
-from predict import visualize_subject
+from utils import visualize_subject
 from metric import cal_subject_metric
 
 
@@ -40,6 +39,8 @@ parser.add_argument("--do_train", action='store_true', default=False, help="do t
 parser.add_argument("--do_predict", action='store_true', default=False, help="do predict")
 parser.add_argument("--init_checkpoint", default=None, type=str, required=False, help="Path to initialize params from")
 parser.add_argument("--data_path", default="./data", type=str, required=False, help="Path to data.")
+parser.add_argument("--train_data_path", default="./data", type=str, required=False, help="Path to train data.")
+parser.add_argument("--dev_data_path", default="./data", type=str, required=False, help="Path to dev data.")
 parser.add_argument("--predict_data_file", default="./data/test_data.json", type=str, required=False, help="Path to data.")
 parser.add_argument("--output_dir", default="./checkpoints", type=str, required=False, help="The output directory where the model_subject predictions and checkpoints will be written.")
 parser.add_argument("--max_seq_length", default=128, type=int,help="The maximum total input sequence length after tokenization. Sequences longer "
@@ -51,6 +52,8 @@ parser.add_argument("--num_train_epochs", default=12, type=int, help="Total numb
 parser.add_argument("--warmup_ratio", default=0, type=float, help="Linear warmup over warmup_ratio * total_steps.")
 parser.add_argument("--seed", default=42, type=int, help="random seed for initialization")
 parser.add_argument("--n_gpu", default=1, type=int, help="number of gpus to use, 0 for cpu.")
+
+
 args = parser.parse_args()
 # yapf: enable
 
@@ -111,26 +114,25 @@ log_name = "model_subject_" + curTime + '.log'
 logging.basicConfig(format='%(asctime)s - %(levelname)s -%(name)s - %(message)s',
                     datefmt='%m/%d%/%Y %H:%M:%S',
                     level=logging.INFO,
-                    filename="/home/lawson/program/DuIE_py/" + log_name,
-                    filemode='a', # 写模式
+                    filename="/home/lawson/program/DuIE_py/log/" + log_name,
+                    filemode='w', # 追加模式
                     )
 logger = logging.getLogger("model_subject")
 
 """
 功能： 评测部分
 """
-def evaluate(model_subject,dev_data_loader,criterion):
+def evaluate(model_subject,dev_data_loader,criterion,pred_file_path):
     # Does predictions.
     logger.info("\n====================start  evaluating ====================")   
-    tokenizer = BertTokenizerFast.from_pretrained("/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch")
-
-    model_subject.eval()
+    tokenizer = BertTokenizerFast.from_pretrained("/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch")    
     # 将subject的预测结果写到文件中
-    file_path = "/home/lawson/program/DuIE_py/data/subject_predict000.txt"
-    if os.path.exists(file_path):# 因为下面是追加写入到文件中，所以
-        os.remove(file_path)
+    if os.path.exists(pred_file_path):# 因为下面是追加写入到文件中，所以
+        os.remove(pred_file_path)
     total_loss = 0 # 总损失
     invalid_num = 0 # 预测失败的个数
+    all_subjects = []
+    all_subject_labels = []
     with t.no_grad():        
         for batch in tqdm(dev_data_loader):
             # origin_info 是原始的json格式的信息
@@ -155,13 +157,24 @@ def evaluate(model_subject,dev_data_loader,criterion):
                                                                   batch_origin_info,
                                                                   offset_mapping
                                                                   )
-            # 追加写入到文件中
-            visualize_subject(file_path, batch_subjects, batch_subject_labels)
+            
+            # 添加一个后处理 => 将所有的书名号中的内容都作为 subject 
+            for item in zip(batch_origin_info,batch_subjects,batch_subject_labels):
+                origin_info,subjects,labels = item
+                target = addBookName(origin_info['text'])
+                subjects.extend(target)
+                labels.extend(["后处理"] * len(target))
+
+            all_subjects.append(batch_subjects)
+            all_subject_labels.append(batch_subject_labels)    
             # 需要判断 batch_subjects 是空的情况，最好能够和普通subjects 一样处理        
             if(len(batch_subjects[0]) == 0):
                 #print("----- 未预测到subject ----------")
-                invalid_num+=1            
+                invalid_num+=1
                 continue
+        
+        # 写入到文件中(w)
+        visualize_subject(pred_file_path, all_subjects, all_subject_labels)
         avg_loss = total_loss / len(dev_data_loader)
         logger.info(f"平均损失是：{avg_loss}")
         logger.info(f"未预测到的subject 数目是：{invalid_num}")
@@ -172,14 +185,16 @@ def do_train():
     # 这一部分我用一个 NER 任务来做，但是原任务用的是 start + end 的方式，原理是一样的
     # ========================== =================== =============================
     name_or_path = "/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch"
-    model_subject = SubjectModel(name_or_path,768,out_fea=subject_class_num)    
+    model_subject = SubjectModel(name_or_path,768,out_fea=subject_class_num)
+    if (args.init_checkpoint != None): # 加载初始模型
+        model_subject.load_state_dict(t.load(args.init_checkpoint))
     model_subject = model_subject.cuda()    
     tokenizer = BertTokenizerFast.from_pretrained("/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch")
     criterion = nn.CrossEntropyLoss() # 使用交叉熵计算损失
 
     # Loads dataset.
     train_dataset = TrainSubjectDataset.from_file(
-        os.path.join(args.data_path, 'train_data.json'),
+        args.train_data_path,
         tokenizer,
         args.max_seq_length,
         True
@@ -202,9 +217,8 @@ def do_train():
     # Loads dataset.
     # 放在外面是为了避免每次 evaluate 的时候都加载一遍
     # dev 数据集也是用 TrainSubjectDataset 的原因是：想计算loss
-    dev_dataset = TrainSubjectDataset.from_file(
-        #os.path.join(args.data_path, 'train_data_2.json'),
-        os.path.join(args.data_path, 'dev_data.json'),
+    dev_dataset = TrainSubjectDataset.from_file(        
+        args.dev_data_path,
         tokenizer,
         args.max_seq_length,
         True
@@ -226,7 +240,7 @@ def do_train():
     
     # 需要合并所有模型的参数    
     optimizer = t.optim.AdamW(
-        [{'params':model_subject.parameters(),'lr':2e-5},        
+        [{'params':model_subject.parameters(),'lr':2e-5},
         ],
         #weight_decay=args.weight_decay,        
         ) 
@@ -240,14 +254,14 @@ def do_train():
     # Starts training.
     global_step = 0
     logging_steps = 50
-    save_steps = 5000
+    save_steps = 100
     tic_train = time.time()
-    step = 0
     for epoch in tqdm(range(args.num_train_epochs)):
-        logger.info(f"\n=====start training of {epoch}=====")
+        logger.info(f"\n=====start training of {epoch} epochs =====")
         tic_epoch = time.time()
         # 设置为训练模式
-        model_subject.train() # 预测subject        
+        model_subject.train() # 预测subject
+        step = 0
         for batch in tqdm(train_data_loader):
             step += 1
             input_ids,token_type_ids,attention_mask,batch_origin_info, labels,offset_mappings = batch
@@ -270,28 +284,25 @@ def do_train():
             # 打日志
             if global_step % logging_steps == 0 :
                 logger.info(
-                    f"epoch:{epoch}/{args.num_train_epochs},\
-                    steps:{step}/{steps_by_epoch}, loss:{loss_item},\
-                    speed: {logging_steps / (time.time() - tic_train)} step/s")
+                    f"epoch:{epoch}/{args.num_train_epochs},  steps:{step}/{steps_by_epoch},   loss:{loss_item},  speed: {logging_steps / (time.time() - tic_train)} step/s")
                 tic_train = time.time()
             
             # 保存模型
             if global_step % save_steps == 0 and global_step != 0 :                
-                logger.info("saving checkpoing model_subject_{global_step}.pdparams to {args.output_dir}")
-                cur_model_name = os.path.join(args.output_dir,"model_subject_%d_roberta.pdparams" % global_step)
+                logger.info(f"saving checkpoing model_subject_{global_step}.pdparams to {args.output_dir}")
+                cur_model_name = os.path.join(args.output_dir,"model_subject_%d_roberta.pdparams" % (global_step+64236))
                 t.save(model_subject.state_dict(),cur_model_name)
 
                 # 使用dev 数据集评测模型效果
-                evaluate(model_subject,dev_data_loader,criterion)                
-                recall,precision,f1 = cal_subject_metric(dev_data_file_path = "/home/lawson/program/DuIE_py/data/dev_data.json",
-                                    pred_file_path = "/home/lawson/program/DuIE_py/data/subject_predict000.txt")
-                logger.info(f"recall = {recall}, precision = {precision}, f1 = {f1}")
-                model_subject.train()
+                pred_file_path = f"/home/lawson/program/DuIE_py/data/predict/dev_data_subject_predict_model_subject_{global_step+64236}_roberta.txt"
+                evaluate(model_subject,dev_data_loader,criterion,pred_file_path)
+                recall,precision,f1 = cal_subject_metric(dev_data_file_path = "/home/lawson/program/DuIE_py/data/dev_data.json",pred_file_path=pred_file_path)
+                logger.info(f"recall = {recall}, precision = {precision}, f1 = {f1}")                
 
             global_step += 1
         t.save(model_subject.state_dict(),
             os.path.join(args.output_dir,
-                            "model_subject_%d_roberta.pdparams" % global_step))
+                            "model_subject_%d_roberta.pdparams" % (global_step + 64236)))
     logger.info("\n=====training complete=====")
 
 
