@@ -74,7 +74,10 @@ def cal_subject_metric(dev_data_file_path,pred_file_path):
 
     recall = correct_num / gold_num
     precision = correct_num / recall_num
-    f1 = (2*recall*precision) / (recall+precision)
+    if recall+precision == 0: # divide zero error
+        f1 = 0
+    else:
+        f1 = (2*recall*precision) / (recall+precision)
     print(f"correct_num={correct_num}\npred_num={pred_num}\ngold_num={gold_num}\nrecall = {recall}, precision = {precision}, f1 = {f1}")
     print(f"遗漏的subject有：{len(forget_subject)} 个")
     print(f"多余的subject有：{len(redundant_subject)}")
