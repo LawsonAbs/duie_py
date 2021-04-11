@@ -149,6 +149,8 @@ params:
  object_map: 
 '''
 def parse_subject_label(spo_list, subject_map, tokens, tokenizer,object_map):    
+    # 将下面这些object数据排除掉，因为这些object 大都是谓语，不可能做subject 
+    exclude = ['成立日期','获奖','上映时间','票房','海拔','修业年限','人口数量','面积','注册资本','邮政编码','占地面积','专业代码']
     seq_len = len(tokens)
     # initialize tag
     labels = [0 for i in range(seq_len)]
@@ -169,21 +171,23 @@ def parse_subject_label(spo_list, subject_map, tokens, tokenizer,object_map):
                 break
 
         # ========== 找 object 的标签 ==========
-        object_dict = spo['object']  # a dict
-        objects = list(object_dict.values()) # 装入当前这个 spo 中的所有object        
-        object_types = list(spo['object_type'].values())
-        for item in zip(objects,object_types):
-            object,object_type = item
-            object_val_tokens = tokenizer.tokenize(object)
-            object_len = len(object_val_tokens)                      
-            # 遍历找出下标
-            # TODO:这里其实存在一个问题，就是如果 subject 在text中多次出现，那么该怎么办？ => 照标不误
-            for i,word in enumerate(tokens): 
-                if tokens[i:i+object_len] == object_val_tokens:
-                    labels[i] = object_map[object_type] # 'B_图书作品'
-                    for j in range(i+1,i+object_len):
-                        labels[j] = 1 # 'I'
-                    break
+        predicate = spo['predicate']
+        if predicate not in exclude:            
+            object_dict = spo['object']  # a dict
+            objects = list(object_dict.values()) # 装入当前这个 spo 中的所有object        
+            object_types = list(spo['object_type'].values())
+            for item in zip(objects,object_types):
+                object,object_type = item
+                object_val_tokens = tokenizer.tokenize(object)
+                object_len = len(object_val_tokens)                      
+                # 遍历找出下标
+                # TODO:这里其实存在一个问题，就是如果 subject 在text中多次出现，那么该怎么办？ => 照标不误
+                for i,word in enumerate(tokens): 
+                    if tokens[i:i+object_len] == object_val_tokens:
+                        labels[i] = 19  # 在 subject_map 之外的数据，统统设置为19
+                        for j in range(i+1,i+object_len):
+                            labels[j] = 1 # 'I'
+                        break
     return labels
 
 
@@ -737,7 +741,7 @@ class PredictSubjectDataCollator:
         offset_mapping = np.stack([x['offset_mapping'] for x in examples])
         batched_input_ids = t.tensor(batched_input_ids).cuda()
         token_typed_ids = t.tensor(token_typed_ids).cuda()
-        attention_mask = t.tensor(attention_mask).cuda()        
+        attention_mask = t.tensor(attention_mask).cuda()
 
         return (batched_input_ids,token_typed_ids,attention_mask, origin_info,offset_mapping)
 
