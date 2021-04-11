@@ -184,7 +184,11 @@ def parse_subject_label(spo_list, subject_map, tokens, tokenizer,object_map):
                 # TODO:这里其实存在一个问题，就是如果 subject 在text中多次出现，那么该怎么办？ => 照标不误
                 for i,word in enumerate(tokens): 
                     if tokens[i:i+object_len] == object_val_tokens:
-                        labels[i] = 19  # 在 subject_map 之外的数据，统统设置为19
+                        # 如果object_type 出现在了subject_map 中，那么就继续使用subject_map中的标签，否则使用19
+                        if object_type not in subject_map.keys():
+                            labels[i] = 19  # 在 subject_map 之外的数据，统统设置为19
+                        else:
+                            labels[i] = subject_map[object_type]
                         for j in range(i+1,i+object_len):
                             labels[j] = 1 # 'I'
                         break
