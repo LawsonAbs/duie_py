@@ -248,13 +248,14 @@ def decode_subject(logits,id2subject_map,input_ids,tokenizer,batch_origin_info,b
             elif ind == 0 and cur_subject!="": # 将 cur_subject 放入到 subjects 中
                 cur_subject = cur_subject.replace("#","") # 替换掉，因为这会干扰后面的实现
                 # 后处理部分之删除不符合规则的数据
-                if not is_year_month_day(cur_subject):
-                    subjects.append(cur_subject)
                 # 后处理部分之判断subject 的长度：如果长度大于1的才放进去
-                if len(cur_subject)> 1:  
-                    subjects.append(cur_subject)
-                cur_subject_label = cur_subject_label.replace("#","")
-                labels.append(cur_subject_label)
+                if (not is_year_month_day(cur_subject) 
+                    and (len(cur_subject)> 1)
+                    and cur_subject_label != 19 # 如果不是第19 类（杂类），那么就放入其中
+                    ):
+                    subjects.append(cur_subject)                                
+                    cur_subject_label = cur_subject_label.replace("#","")
+                    labels.append(cur_subject_label)
                 cur_subject = ""
         
         batch_subjects.append(subjects)
