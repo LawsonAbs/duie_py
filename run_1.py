@@ -29,7 +29,7 @@ from data_loader import DuIEDataset, DataCollator, ObjectDataset,TrainSubjectDat
 from data_loader import PredictSubjectDataset,PredictSubjectDataCollator
 from utils import decode_subject,decode_object, decoding, find_entity, get_precision_recall_f1, write_prediction_results, addBookName
 
-from data_loader import from_dict,from_dict2_relation
+from data_loader import from_dict2object,from_dict2_relation
 from utils import visualize_subject
 from metric import cal_subject_metric
 
@@ -243,7 +243,7 @@ def do_train():
         [{'params':model_subject.parameters(),'lr':2e-5},
         ],
         #weight_decay=args.weight_decay,        
-        ) 
+        )
 
     # Defines learning rate strategy.
     steps_by_epoch = len(train_data_loader)
@@ -254,7 +254,7 @@ def do_train():
     # Starts training.
     global_step = 0
     logging_steps = 50
-    save_steps = 100
+    save_steps = 5000
     tic_train = time.time()
     for epoch in tqdm(range(args.num_train_epochs)):
         logger.info(f"\n=====start training of {epoch} epochs =====")
@@ -302,7 +302,7 @@ def do_train():
             global_step += 1
         t.save(model_subject.state_dict(),
             os.path.join(args.output_dir,
-                            "model_subject_%d_roberta.pdparams" % (global_step + 64236)))
+                            "model_subject_%d_roberta.pdparams" % (global_step+64236)))
     logger.info("\n=====training complete=====")
 
 
