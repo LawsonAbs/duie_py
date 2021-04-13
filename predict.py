@@ -24,16 +24,17 @@ from torch.utils.data import BatchSampler,SequentialSampler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from transformers import BertTokenizerFast, BertForSequenceClassification
 
-from data_loader import PredictSubjectDataset,PredictSubjectDataCollator
-from utils import decode_subject,decode_object, decoding,  find_entity, get_precision_recall_f1, write_prediction_results
+from data_loader import PredictSubjectDataset,PredictSubjectDataCollator, from_dict2object,get_negative_relation_data
+from utils import decode_subject,decode_object, decoding,  find_entity, get_precision_recall_f1, visualize_subject_object, write_prediction_results
 from utils import decode_relation_class,post_process,addBookName,visualize_subject
-from data_loader import from_dict,from_dict2_relation
+from data_loader import from_dict2object,from_dict2_relation
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--do_train", action='store_true', default=False, help="do train")
 parser.add_argument("--do_predict", action='store_true', default=False, help="do predict")
 parser.add_argument("--init_checkpoint", default=None, type=str, required=False, help="Path to initialize params from")
 parser.add_argument("--data_path", default="./data", type=str, required=False, help="Path to data.")
+parser.add_argument("--dev_data_path", default="./data", type=str, required=False, help="Path to data.")
 parser.add_argument("--predict_data_file", default="./data/test_data.json", type=str, required=False, help="Path to data.")
 parser.add_argument("--output_dir", default="./checkpoints", type=str, required=False, help="The output directory where the model_subject predictions and checkpoints will be written.")
 parser.add_argument("--max_seq_length", default=128, type=int,help="The maximum total input sequence length after tokenization. Sequences longer "
@@ -46,10 +47,22 @@ parser.add_argument("--warmup_ratio", default=0, type=float, help="Linear warmup
 parser.add_argument("--seed", default=42, type=int, help="random seed for initialization")
 parser.add_argument("--n_gpu", default=1, type=int, help="number of gpus to use, 0 for cpu.")
 parser.add_argument("--model_subject_path",type=str,help="ds")
-parser.add_argument("--dev_data_path",type=str,help="sd")
+parser.add_argument("--model_object_path",type=str,help="ds")
+parser.add_argument("--model_relation_path",type=str,help="ds")
 args = parser.parse_args()
 # yapf: enable
 
+
+import time
+curTime = time.strftime("%m%d_%H%M%S", time.localtime())
+log_name = "predict" + curTime + '.log'
+logging.basicConfig(format='%(asctime)s - %(levelname)s -%(name)s - %(message)s',
+                    datefmt='%m/%d%/%Y %H:%M:%S',
+                    level=logging.INFO,
+                    filemode='w',
+                    filename="/home/lawson/program/DuIE_py/log/" + log_name
+                    )
+logger = logging.getLogger("predict")
 
 
 # Reads subject_map.
@@ -118,12 +131,14 @@ def set_random_seed(seed):
 def predict_subject(model_subject_path,out_file_path):
     # Does predictions.
     print("\n====================start predicting / evaluating ====================")
-    name_or_path = "/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch"
-    model_subject = SubjectModel(name_or_path,768,out_fea=subject_class_num)    
+    #name_or_path = "/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch"
+    name_or_path = "/home/lawson/pretrain/bert-base-chinese"
+    model_subject = SubjectModel(name_or_path,768,out_fea=subject_class_num)
     model_subject.load_state_dict(t.load(model_subject_path))
     model_subject = model_subject.cuda()
 
-    tokenizer = BertTokenizerFast.from_pretrained("/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch")
+    #tokenizer = BertTokenizerFast.from_pretrained("/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch")
+    tokenizer = BertTokenizerFast.from_pretrained("/home/lawson/pretrain/bert-base-chinese")
     # Loads dataset.
     dev_dataset = PredictSubjectDataset.from_file(                
         args.dev_data_path,
@@ -185,23 +200,29 @@ def predict_subject(model_subject_path,out_file_path):
 
 
 
-def predict_object(model_object_path):
+"""
+在subject的基础上预测object
+
+"""
+def predict_subject_object(model_subject_path,model_object_path):
     # Does predictions.
-    print("\n====================start predicting====================")
-    name_or_path = "/home/lawson/pretrain/bert-base-chinese"
-    
-    model_object = ObjectModel(name_or_path,768,object_class_num)        
+    print("\n====================start predicting / evaluating ====================")
+    #name_or_path = "/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch"
+    subject_name_or_path = "/home/lawson/pretrain/bert-base-chinese"
+    model_subject = SubjectModel(subject_name_or_path,768,out_fea=subject_class_num-1)
+    model_subject.load_state_dict(t.load(model_subject_path))
+    model_subject = model_subject.cuda()
+
+
+    object_name_or_path = "/home/lawson/pretrain/bert-base-chinese"        
+    model_object = ObjectModel(object_name_or_path,768,object_class_num)
     model_object = model_object.cuda()
     model_object.load_state_dict(t.load(model_object_path))
     
-    tokenizer = BertTokenizerFast.from_pretrained("/home/lawson/pretrain/bert-base-chinese")
-    #predict_file_path = os.path.join(args.data_path, 'train_data_2_predict.json') 
-    predict_file_path = os.path.join(args.data_path, 'dev_data_predict.json') 
-
+    tokenizer = BertTokenizerFast.from_pretrained("/home/lawson/pretrain/bert-base-chinese")    
     # Loads dataset.
-    dev_dataset = PredictSubjectDataset.from_file(
-        #os.path.join(args.data_path, 'train_data_2.json'),
-        os.path.join(args.data_path, 'dev_data.json'),
+    dev_dataset = PredictSubjectDataset.from_file(                
+        args.dev_data_path,
         tokenizer,
         args.max_seq_length,
         True
@@ -214,21 +235,62 @@ def predict_object(model_object_path):
         collate_fn=collator, # 重写一个 collator
         )
 
-    model_object.eval()
-    # 将subject的预测结果写到文件中
-    file_path = "./data/subject_predict.txt"    
+    model_subject.eval()
+    
     res = [] # 最后的预测结果
-    invalid_num = 0 # 预测失败的个数
-    with t.no_grad():
-        for batch in tqdm(dev_data_loader):            
+    subject_invalid_num = 0 # 预测失败的个数
+    subject_object_predict_file = "./subject_object_predict.txt"
+    if os.path.exists(subject_object_predict_file):
+        os.remove(subject_object_predict_file)
+    with t.no_grad():        
+        for batch in tqdm(dev_data_loader):
+            # origin_info 是原始的json格式的信息
+            input_ids,token_type_ids,attention_mask, batch_origin_info,offset_mapping = batch
+            # labels size = [batch_size,max_seq_length]
+            logits_1 = model_subject(input_ids=input_ids,
+                                    token_type_ids=token_type_ids,
+                                    attention_mask=attention_mask
+                                    )
+            #logits size [batch_size,max_seq_len,class_num]  
+            # 得到预测到的 subject
+            # temp = get_rid_of_number_in_str(origin_info[0]['text'])
+            # origin_info[0]['text'] = temp
+            batch_subjects,batch_subject_labels = decode_subject(logits_1,
+            id2subject_map,
+            input_ids,
+            tokenizer,
+            batch_origin_info,
+            offset_mapping
+            )
+            
+            # 添加一个后处理 => 将所有的书名号中的内容都作为 subject 
+            for item in zip(batch_origin_info,batch_subjects,batch_subject_labels):
+                origin_info,subjects,labels = item
+                target = addBookName(origin_info['text'])
+                for word in target:
+                    if word not in subjects:
+                        subjects.append(word)      
+                        labels.append("后处理")
+            
+            # 将subjects 中的元素去重                  
+            # 需要判断 batch_subjects 是空的情况，最好能够和普通subjects 一样处理        
+            if(len(batch_subjects[0]) == 0):
+                #print("----- 未预测到subject ----------")
+                subject_invalid_num+=1
+                continue
+
+            
+            print("\n====================start predicting object ====================")                    
+            # 将subject的预测结果写到文件中                        
+            object_invalid_num = 0 
             # ====== 根据origin_info 得到 subtask 2 的训练数据 ==========
             # 这里的object_input_ids 的 size 不再是args.batch_size ，可能比这个稍大
             object_input_ids, object_token_type_ids,object_attention_mask,\
-            object_labels,object_origin_info,object_offset_mapping = from_dict(batch_subjects=batch_subjects,
-                                                         batch_origin_dict=origin_info,
-                                                         tokenizer=tokenizer,
-                                                         max_length=args.max_seq_length,
-                                                         )
+            object_labels,object_origin_info,object_offset_mapping = from_dict2object(batch_subjects=batch_subjects,
+                                                        batch_origin_dict=batch_origin_info,
+                                                        tokenizer=tokenizer,
+                                                        max_length=args.max_seq_length,
+                                                        )
             object_input_ids = t.tensor(object_input_ids).cuda()
             object_token_type_ids = t.tensor(object_token_type_ids).cuda()
             object_attention_mask = t.tensor(object_attention_mask).cuda()
@@ -246,31 +308,30 @@ def predict_object(model_object_path):
                 object_offset_mapping
             )
 
-            if(len(batch_objects[0]) == 0):
-                invalid_num+=1
-                #print("----- 未预测到 object ----------")        
-                continue
-
+            # 可视化subject + object 的预测结果
+            visualize_subject_object(subject_object_predict_file,batch_subjects,batch_objects,batch_origin_info)            
+            
 
 """
 使用训练好的模型，进行预测。
 01.这里使用的是预测的结果，而不是golden
 02.这里的数据集统一叫做 dev_data.json
+03.当前只支持batch=1的情况
 """
 def do_predict(model_subject_path,model_object_path,model_relation_path):
     # Does predictions.
-    print("\n====================start predicting====================")
-    name_or_path = "/home/lawson/pretrain/bert-base-chinese"
-    model_subject = SubjectModel(name_or_path,768,out_fea=subject_class_num)    
+    logger.info("\n====================start predicting====================")
+    bert_name_or_path = "/home/lawson/pretrain/bert-base-chinese"
+    model_subject = SubjectModel(bert_name_or_path,768,out_fea=subject_class_num-1)
     model_subject.load_state_dict(t.load(model_subject_path))
     model_subject = model_subject.cuda()    
 
-    model_object = ObjectModel(name_or_path,768,object_class_num)        
+    model_object = ObjectModel(bert_name_or_path,768,object_class_num)
     model_object = model_object.cuda()
     model_object.load_state_dict(t.load(model_object_path))
 
-
-    model_relation = RelationModel(name_or_path,relation_class_num)
+    roberta_name_or_path = "/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch"
+    model_relation = RelationModel(roberta_name_or_path,relation_class_num)
     model_relation = model_relation.cuda()
     model_relation.load_state_dict(t.load(model_relation_path))
 
@@ -281,7 +342,7 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
     # Loads dataset.
     dev_dataset = PredictSubjectDataset.from_file(
         #os.path.join(args.data_path, 'train_data_2.json'),
-        os.path.join(args.data_path, 'dev_data.json'),
+        args.dev_data_path,
         tokenizer,
         args.max_seq_length,
         True
@@ -304,7 +365,7 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
     with t.no_grad():
         for batch in tqdm(dev_data_loader):
             # origin_info 是原始的json格式的信息
-            input_ids,token_type_ids,attention_mask, origin_info,offset_mapping = batch
+            input_ids,token_type_ids,attention_mask, batch_origin_info,offset_mapping = batch
             # labels size = [batch_size,max_seq_length]
             logits_1 = model_subject(input_ids=input_ids,
                                     token_type_ids=token_type_ids,
@@ -318,25 +379,31 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
             id2subject_map,
             input_ids,
             tokenizer,
-            origin_info[0]['text'],
+            batch_origin_info,
             offset_mapping
             )
-            #visualize_subject(file_path,temp,batch_subjects,batch_subject_labels)
             
-            # 需要判断 batch_subjects 是空的情况，最好能够和普通subjects 一样处理        
-            if(len(batch_subjects[0]) == 0):
-                #print("----- 未预测到subject ----------")        
-                invalid_num+=1
-                continue
+            # 添加一个后处理 => 将所有的书名号中的内容都作为 subject 
+            for item in zip(batch_origin_info,batch_subjects,batch_subject_labels):
+                origin_info,subjects,labels = item
+                target = addBookName(origin_info['text'])
+                for word in target:
+                    if word not in subjects:
+                        subjects.append(word)      
+                        labels.append("后处理")            
 
+            
+            logger.info("\n====================start predicting object ====================")                    
+            # 将subject的预测结果写到文件中                        
+            object_invalid_num = 0 
             # ====== 根据origin_info 得到 subtask 2 的训练数据 ==========
             # 这里的object_input_ids 的 size 不再是args.batch_size ，可能比这个稍大
             object_input_ids, object_token_type_ids,object_attention_mask,\
-            object_labels,object_origin_info,object_offset_mapping = from_dict(batch_subjects=batch_subjects,
-                                                         batch_origin_dict=origin_info,
-                                                         tokenizer=tokenizer,
-                                                         max_length=args.max_seq_length,
-                                                         )
+            object_labels,object_origin_info,object_offset_mapping = from_dict2object(batch_subjects=batch_subjects,
+                                                        batch_origin_dict=batch_origin_info,
+                                                        tokenizer=tokenizer,
+                                                        max_length=args.max_seq_length,
+                                                        )
             object_input_ids = t.tensor(object_input_ids).cuda()
             object_token_type_ids = t.tensor(object_token_type_ids).cuda()
             object_attention_mask = t.tensor(object_attention_mask).cuda()
@@ -358,19 +425,21 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
                 invalid_num+=1
                 #print("----- 未预测到 object ----------")        
                 continue
-            # ====== 根据 subject + object 得到 subtask 3 的训练数据 ==========        
+            # ====== 根据 subject + object 得到 subtask 3 的测试数据 ==========        
             relation_input_ids, relation_token_type_ids,\
             relation_attention_mask, relation_labels = from_dict2_relation(batch_subjects,
-            batch_objects,
-            origin_info,
-            tokenizer,
-            args.max_seq_length
-            )
+                                                                               batch_objects,
+                                                                               batch_origin_info,
+                                                                               tokenizer,
+                                                                               args.max_seq_length
+                                                                               )
             
             relation_input_ids = t.tensor(relation_input_ids).cuda()
             relation_token_type_ids = t.tensor(relation_token_type_ids).cuda()
             relation_attention_mask = t.tensor(relation_attention_mask).cuda()        
-
+            if relation_input_ids.size(0) == 0:
+                continue
+            
             # 这个模型直接得到loss
             out = model_relation(input_ids=relation_input_ids,
                                     token_type_ids=relation_token_type_ids,
@@ -388,9 +457,9 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
                         batch_objects, # 5
                         batch_object_labels,# 5
                         batch_relations,
-                        origin_info[0]['text']
+                        batch_origin_info
             )        
-            res.append(cur_res)
+            res.extend(cur_res)
 
     # 写出最后的结果    
     with open(predict_file_path,"w",encoding="utf-8") as f:
@@ -400,8 +469,8 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
             #print(json_str)
             f.write(json_str)
             f.write('\n')          
-    print(f"未预测到的个数是：{invalid_num}")
-    print("=====predicting complete=====")
+    logger.info(f"未预测到的个数是：{invalid_num}")
+    logger.info("=====predicting complete=====")
 
 
 if __name__ == "__main__":
@@ -412,16 +481,7 @@ if __name__ == "__main__":
 
     if args.do_predict:
         model_subject_path = args.model_subject_path
-        # model_object_path = "/home/lawson/program/DuIE_py/model_object/model_object_556706.pdparams"
-        # model_relation_path  = "/home/lawson/program/DuIE_py/model_relation/model_relation_513888.pdparams"
-        #do_predict(model_subject_path,model_object_path,model_relation_path)
-        
-        # 将subject的预测结果写到文件中 & 命名文件名
-        out_file_path = "/home/lawson/program/DuIE_py/data/predict/dev_data_subject_predict_"
-        a = model_subject_path.split("/")[-1].split(".")
-        suffix = a[0] +".txt"
-        out_file_path += suffix
-
-        predict_subject(model_subject_path,out_file_path)
-        dev_data_file_path = args.dev_data_path
-        cal_subject_metric(dev_data_file_path,out_file_path)
+        model_object_path = args.model_object_path
+        model_relation_path = args.model_relation_path
+        do_predict(model_subject_path,model_object_path,model_relation_path)
+        #predict_subject_object(model_subject_path,model_object_path)        
