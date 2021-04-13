@@ -289,8 +289,8 @@ def decode_object(logits,id2object_map,tokenizer,object_input_ids,object_origin_
         cur_object = ""
         for i,ind in enumerate(indexs):
             if ind > 1 : # 说明是一个标签的开始                
-                left,right = tuple(offset[i])                
-                cur_object+= text_raw[left:right] 
+                left,right = tuple(offset[i])
+                cur_object+= text_raw[left:right]
                 cur_object_label = id2object_map[str(ind.item())]
             if ind == 1 and cur_object!="": # 说明是中间部分，且 cur_subject 不为空
                 left,right = tuple(offset[i])                
@@ -329,29 +329,38 @@ def post_process(batch_subjects,
                      batch_objects,
                      batch_objects_labels,
                      batch_relations,
-                     origin_info
+                     batch_origin_info
                      ):
     batch_res = []    
-    cnt = 0    
-    for item_1 in zip(batch_subjects,batch_subjects_labels): # 从所有的 batch 中取出一条样本
-        subjects,subject_labels = item_1
-        cur_index = 0
+    cnt = 0
+    cur_index = 0
+    # step1.从所有的 batch 中取出一条样本
+    for item_1 in zip(batch_subjects,batch_subjects_labels,batch_origin_info): 
+        subjects,subject_labels,origin_info = item_1        
         cur_res ={} # 重置
-        cur_res['text'] = origin_info     
+        cur_res['text'] = origin_info['text']
         spo_list = [] # 是一个列表   
-        for item_2 in zip(subjects,subject_labels):  # 从某条样本中取出所有的 subjects 以及其标签
+        # step2. 从某条样本中取出所有的 subjects 以及其标签
+        for item_2 in zip(subjects,subject_labels):  
             subject,subject_label = item_2
             # 取该subjects 对应的objects 和 objects_labels
             objects = batch_objects[cur_index:cur_index+1][0]  # 和subject 对应在一起的所有 object
             objects_labels = batch_objects_labels[cur_index:cur_index+1][0]            
-            for item_3 in zip(objects,objects_labels): # 从上述的 objects 以及labels 中对应取出单个                
+            
+            # step3. 从上述的 objects 以及labels 中对应取出单个
+            for item_3 in zip(objects,objects_labels): 
                 cur_dict = {} # cur_dict 都会被放入到spo_list 中
                 obj , obj_label = item_3
-                if (subject == obj): # 说明预测的subject 和 object 一样，这样的数据没有意义
+                cur_dict['predicate'] = batch_relations[cnt]
+                
+                # 说明预测的subject 和 object 一样，这样的数据没有意义
+                # 或者预测结果表明二者没有关系
+                if (subject == obj or cur_dict['predicate']=='O'):
+                    cnt+=1
                     continue
                 val_1 = {} # 存放object
                 val_2 = {} # 存放object_type
-                cur_dict['predicate'] = batch_relations[cnt]                
+                
                 
                 # 如果是复杂的结构，则需要另行处理
                 if(batch_relations[cnt] == '饰演' or batch_relations[cnt]=="配音"): 
@@ -492,6 +501,35 @@ def visualize_subject(file_path,all_subjects,all_subject_labels):
                         subject,label = lines
                         f.write(subject +"\t" +label+"\n")                
                 f.write("\n")
+
+
+"""
+可视化subject 和 object 的预测结果
+
+"""
+def visualize_subject_object(file_path,batch_subjects,batch_objects,batch_origin_info):    
+    all_subjects = []
+    for subjects in batch_subjects:
+        if len(subjects) == 0:
+            all_subjects.append([]) # 放一个空的list进去
+        else:
+            all_subjects.extend(subjects)
+
+    with open(file_path,'a') as f:
+        index = 0
+        for subjects in (batch_subjects):# 找出每条句子的所有subject
+            if len(subjects) == 0:
+                subjects = ["None"] # 手动添加一个None
+            for subject in subjects: # 找出该句子的某个subject 
+                cur_objects = batch_objects[index]
+                for object in cur_objects:
+                    if object == subject:
+                        continue
+                    line = subject + "\t" + object +"\n"
+                    f.write(line)
+                index += 1
+            # 在每条句子后需要一个换行
+            f.write("\n") 
 
 
 if __name__ == "__main__":
