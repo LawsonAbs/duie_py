@@ -1,7 +1,10 @@
 """
 运行subject预测的模型
 """
+from visdom import Visdom
 import logging
+
+import visdom
 from models import RelationModel, SubjectModel,ObjectModel
 import argparse
 import os
@@ -25,7 +28,7 @@ from torch.utils.data import BatchSampler,SequentialSampler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from transformers import BertTokenizerFast, BertForSequenceClassification
 
-from data_loader import DuIEDataset, DataCollator, ObjectDataset,TrainSubjectDataset,TrainSubjectDataCollator
+from data_loader import DataCollator,TrainSubjectDataset,TrainSubjectDataCollator
 from data_loader import PredictSubjectDataset,PredictSubjectDataCollator
 from utils import decode_subject,decode_object, decoding, find_entity, get_precision_recall_f1, write_prediction_results, addBookName
 
@@ -36,6 +39,7 @@ from metric import cal_subject_metric
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--do_train", action='store_true', default=False, help="do train")
+parser.add_argument("--do_eval", action='store_true', default=False, help="do train")
 parser.add_argument("--do_predict", action='store_true', default=False, help="do predict")
 parser.add_argument("--init_checkpoint", default=None, type=str, required=False, help="Path to initialize params from")
 parser.add_argument("--data_path", default="./data", type=str, required=False, help="Path to data.")
@@ -119,6 +123,49 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s -%(name)s - %(message)s'
                     )
 logger = logging.getLogger("model_subject")
 
+vis = Visdom()
+win = "subject_loss"
+
+tokenizer = BertTokenizerFast.from_pretrained("/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch")
+criterion = nn.CrossEntropyLoss() # 使用交叉熵计算损失
+collator = TrainSubjectDataCollator()
+
+"""
+将数据加载部分放在外面是为了将数据和函数分离，这样可以方便的单独调用evaluate()函数
+"""
+if args.do_train:
+    # Loads dataset.
+    train_dataset = TrainSubjectDataset.from_file(
+        args.train_data_path,
+        tokenizer,
+        args.max_seq_length,
+        True
+        )
+
+    train_data_loader = DataLoader(        
+        dataset=train_dataset,
+        #batch_sampler=train_batch_sampler,
+        batch_size=args.batch_size,
+        collate_fn=collator, # 重写一个 collator
+        )
+
+    # Loads dataset.
+    # 放在外面是为了避免每次 evaluate 的时候都加载一遍
+    # dev 数据集也是用 TrainSubjectDataset 的原因是：想计算loss
+    dev_dataset = TrainSubjectDataset.from_file(        
+        args.dev_data_path,
+        tokenizer,
+        args.max_seq_length,
+        True
+        )
+
+    dev_data_loader = DataLoader(        
+        dataset=dev_dataset,
+        batch_size=args.batch_size,
+        collate_fn=collator, # 重写一个 collator
+        )
+
+
 """
 功能： 评测部分
 """
@@ -143,7 +190,7 @@ def evaluate(model_subject,dev_data_loader,criterion,pred_file_path):
                                     attention_mask=attention_mask
                                     )
             #logits size [batch_size,max_seq_len,class_num]  
-            temp = logits_1.view(-1,subject_class_num) 
+            temp = logits_1.view(-1,subject_class_num-1) 
             labels = labels.view(-1)
             cur_loss = criterion(temp, labels)
             total_loss += cur_loss
@@ -184,21 +231,13 @@ def do_train():
     # ========================== subtask 1. 预测subject ==========================
     # 这一部分我用一个 NER 任务来做，但是原任务用的是 start + end 的方式，原理是一样的
     # ========================== =================== =============================
-    name_or_path = "/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch"
-    model_subject = SubjectModel(name_or_path,768,out_fea=subject_class_num)
+    bert_name_or_path = "/home/lawson/pretrain/bert-base-chinese"
+    roberta_name_or_path = "/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch"
+    model_subject = SubjectModel(bert_name_or_path,768,out_fea=subject_class_num-1)
     if (args.init_checkpoint != None): # 加载初始模型
         model_subject.load_state_dict(t.load(args.init_checkpoint))
-    model_subject = model_subject.cuda()    
-    tokenizer = BertTokenizerFast.from_pretrained("/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch")
-    criterion = nn.CrossEntropyLoss() # 使用交叉熵计算损失
-
-    # Loads dataset.
-    train_dataset = TrainSubjectDataset.from_file(
-        args.train_data_path,
-        tokenizer,
-        args.max_seq_length,
-        True
-        )
+    model_subject = model_subject.cuda()        
+    
     # 这里将DistributedBatchSample(paddle) 修改成了 DistributedSample(torch)    
     # 如果使用 DistributedSampler 那么应该就是一个多进程加载数据
     # train_batch_sampler = DistributedSampler(
@@ -206,29 +245,6 @@ def do_train():
     #     shuffle=True,
     #     drop_last=True 
     #     )
-    collator = TrainSubjectDataCollator()
-    train_data_loader = DataLoader(        
-        dataset=train_dataset,
-        #batch_sampler=train_batch_sampler,
-        batch_size=args.batch_size,
-        collate_fn=collator, # 重写一个 collator
-        )
-    
-    # Loads dataset.
-    # 放在外面是为了避免每次 evaluate 的时候都加载一遍
-    # dev 数据集也是用 TrainSubjectDataset 的原因是：想计算loss
-    dev_dataset = TrainSubjectDataset.from_file(        
-        args.dev_data_path,
-        tokenizer,
-        args.max_seq_length,
-        True
-        )
-        
-    dev_data_loader = DataLoader(        
-        dataset=dev_dataset,
-        batch_size=args.batch_size,
-        collate_fn=collator, # 重写一个 collator
-        )
     
     # 这里为什么只对一部分的参数做这个decay 操作？ 这个decay 操作有什么作用？
     # Generate parameter names needed to perform weight decay.
@@ -255,13 +271,14 @@ def do_train():
     global_step = 0
     logging_steps = 50
     save_steps = 5000
-    tic_train = time.time()
+    tic_train = time.time()    
     for epoch in tqdm(range(args.num_train_epochs)):
         logger.info(f"\n=====start training of {epoch} epochs =====")
         tic_epoch = time.time()
         # 设置为训练模式
         model_subject.train() # 预测subject
         step = 0
+        batch_loss = 0 # 累积整个batch 的loss
         for batch in tqdm(train_data_loader):
             step += 1
             input_ids,token_type_ids,attention_mask,batch_origin_info, labels,offset_mappings = batch
@@ -271,7 +288,7 @@ def do_train():
                                    attention_mask=attention_mask
                                    )
             #logits size [batch_size,max_seq_len,class_num]
-            logits_1 = logits_1.view(-1,subject_class_num) 
+            logits_1 = logits_1.view(-1,subject_class_num-1) 
             labels = labels.view(-1)  
             loss = criterion(logits_1, labels)
             
@@ -280,6 +297,7 @@ def do_train():
             #lr_scheduler.step()
             optimizer.zero_grad()
             loss_item = loss.item()
+            batch_loss += loss_item
 
             # 打日志
             if global_step % logging_steps == 0 :
@@ -290,11 +308,11 @@ def do_train():
             # 保存模型
             if global_step % save_steps == 0 and global_step != 0 :                
                 logger.info(f"saving checkpoing model_subject_{global_step}.pdparams to {args.output_dir}")
-                cur_model_name = os.path.join(args.output_dir,"model_subject_%d_roberta.pdparams" % (global_step+64236))
+                cur_model_name = os.path.join(args.output_dir,"model_subject_%d_bert.pdparams" % (global_step+64236))
                 t.save(model_subject.state_dict(),cur_model_name)
 
                 # 使用dev 数据集评测模型效果
-                pred_file_path = f"/home/lawson/program/DuIE_py/data/predict/dev_data_subject_predict_model_subject_{global_step+64236}_roberta.txt"
+                pred_file_path = f"/home/lawson/program/DuIE_py/data/predict/dev_data_subject_predict_model_subject_{global_step+64236}_bert.txt"
                 evaluate(model_subject,dev_data_loader,criterion,pred_file_path)
                 recall,precision,f1 = cal_subject_metric(dev_data_file_path = "/home/lawson/program/DuIE_py/data/dev_data.json",pred_file_path=pred_file_path)
                 logger.info(f"recall = {recall}, precision = {precision}, f1 = {f1}")                
@@ -302,7 +320,8 @@ def do_train():
             global_step += 1
         t.save(model_subject.state_dict(),
             os.path.join(args.output_dir,
-                            "model_subject_%d_roberta.pdparams" % (global_step+64236)))
+                            "model_subject_%d_bert.pdparams" % (global_step+64236)))
+        vis.line([batch_loss], [epoch], win=win, update="append")
     logger.info("\n=====training complete=====")
 
 
@@ -313,3 +332,30 @@ if __name__ == "__main__":
 
     if args.do_train:
         do_train()
+    if args.do_eval:        
+        name_or_path = "/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch"
+        model_subject = SubjectModel(name_or_path,768,out_fea=subject_class_num-1)
+        if (args.init_checkpoint != None): # 加载初始模型
+            model_subject.load_state_dict(t.load(args.init_checkpoint))
+        model_subject = model_subject.cuda()        
+        
+        # Loads dataset.
+        # 放在外面是为了避免每次 evaluate 的时候都加载一遍
+        # dev 数据集也是用 TrainSubjectDataset 的原因是：想计算loss
+        dev_dataset = TrainSubjectDataset.from_file(        
+            args.dev_data_path,
+            tokenizer,
+            args.max_seq_length,
+            True
+            )
+
+        dev_data_loader = DataLoader(        
+            dataset=dev_dataset,
+            batch_size=args.batch_size,
+            collate_fn=collator, # 重写一个 collator
+            )
+        pred_file_path = f"/home/lawson/program/DuIE_py/data/predict/dev_data_subject_predict_model_subject_66277_bert3333.txt"
+        if os.path.exists(pred_file_path):
+            os.remove(pred_file_path)
+        evaluate(model_subject,dev_data_loader,criterion,pred_file_path)
+        recall,precision,f1 = cal_subject_metric(args.dev_data_path,pred_file_path=pred_file_path)
