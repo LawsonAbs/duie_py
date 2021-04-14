@@ -1,7 +1,14 @@
 """
 训练 object的模型
+
+20210411
+01.添加预测为空类，即有subject也可能预测不到 object   => 主要对应人名的系列
+02.在训练object的模型时，使用的也是TrainSubjectDataset，因为需要从一个基础的数据集得到 subject，从而进行拼接生成object的训练数据集
 """
-from models import RelationModel, SubjectModel,ObjectModel
+from metric import cal_object_metric
+from visdom import Visdom 
+from transformers import BertTokenizerFast
+from models import ObjectModel
 import logging
 import argparse
 import os
@@ -24,19 +31,19 @@ from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler 
 from torch.utils.data import BatchSampler,SequentialSampler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from transformers import BertTokenizer, BertForSequenceClassification
 
-from data_loader import DuIEDataset, DataCollator, ObjectDataset,SubjectDataset,SubjectDataCollator
-from data_loader import PredictSubjectDataset,PredictSubjectDataCollator
+from data_loader import  TrainSubjectDataset,TrainSubjectDataCollator
 from utils import decode_subject,decode_object, decoding, find_entity, get_precision_recall_f1, write_prediction_results
 
-from data_loader import from_dict,from_dict2_relation
+from data_loader import from_dict2object,from_dict2_relation
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--do_train", action='store_true', default=False, help="do train")
 parser.add_argument("--do_predict", action='store_true', default=False, help="do predict")
 parser.add_argument("--init_checkpoint", default=None, type=str, required=False, help="Path to initialize params from")
 parser.add_argument("--data_path", default="./data", type=str, required=False, help="Path to data.")
+parser.add_argument("--train_data_path", default="./data", type=str, required=False, help="Path to data.")
+parser.add_argument("--dev_data_path", default="./data", type=str, required=False, help="Path to data.")
 parser.add_argument("--predict_data_file", default="./data/test_data.json", type=str, required=False, help="Path to data.")
 parser.add_argument("--output_dir", default="./checkpoints", type=str, required=False, help="The output directory where the model_subject predictions and checkpoints will be written.")
 parser.add_argument("--max_seq_length", default=128, type=int,help="The maximum total input sequence length after tokenization. Sequences longer "
@@ -61,20 +68,40 @@ with open(object_map_path, 'r', encoding='utf8') as fp:
 
 object_class_num = len(object_map.keys())  # 得出object 的class num    
 
+# Reads object_map.
+id2object_map_path = os.path.join(args.data_path, "id2object.json")
+if not (os.path.exists(id2object_map_path) and os.path.isfile(id2object_map_path)):
+    sys.exit("{} dose not exists or is not a file.".format(id2object_map_path))
+with open(id2object_map_path, 'r', encoding='utf8') as fp:
+    id2object_map = json.load(fp)
 
-class BCELossForDuIE(nn.Module):
-    def __init__(self, ):
-        super(BCELossForDuIE, self).__init__()
-        self.criterion = nn.BCEWithLogitsLoss(reduction='none')
 
-    def forward(self, logits, labels, mask):
-        loss = self.criterion(logits, labels)
-        # TODO : 研究cast 的用法 
-        mask = t.cast(mask, 'float32')  
-        loss = loss * mask.unsqueeze(-1)
-        loss = t.sum(loss.mean(axis=2), axis=1) / t.sum(mask, axis=1)
-        loss = loss.mean()
-        return loss
+name_or_path = "/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch"
+model_object = ObjectModel(name_or_path,768,object_class_num)
+if args.init_checkpoint is not None and os.path.exists(args.init_checkpoint):
+    model_object.load_state_dict(t.load(args.init_checkpoint))
+model_object = model_object.cuda()
+criterion = nn.CrossEntropyLoss() # 使用交叉熵计算损失
+tokenizer = BertTokenizerFast.from_pretrained("/home/lawson/pretrain/bert-base-chinese")
+collator = TrainSubjectDataCollator()
+
+# 在object数据集中使用TrainSubjectDataset 是没有问题的    
+dev_dataset = TrainSubjectDataset.from_file(args.dev_data_path,
+                                        tokenizer,
+                                        args.max_seq_length,
+                                        True
+                                        )
+    
+dev_data_loader = DataLoader(
+    dataset=dev_dataset,
+    batch_size= args.batch_size,
+    #batch_sampler=dev_batch_sampler,
+    collate_fn=collator,
+)
+
+
+viz_object = Visdom()
+win = "train_object_loss"
 
 
 def set_random_seed(seed):
@@ -83,30 +110,97 @@ def set_random_seed(seed):
     np.random.seed(seed)
     #t.seed(seed)  # 为什么torch 也要设置这个seed ？
 
+import time
+curTime = time.strftime("%m%d_%H%M%S", time.localtime())
+log_name = "predict" + curTime + '.log'
 logging.basicConfig(format='%(asctime)s - %(levelname)s -%(name)s - %(message)s',
                     datefmt='%m/%d%/%Y %H:%M:%S',
-                    level=logging.INFO)
-logger = logging.getLogger("duie")
+                    level=logging.INFO,
+                    filemode='w',
+                    filename='/home/lawson/program/DuIE_py/log/' + log_name
+                    )
+logger = logging.getLogger("object")
+
+
+
+"""
+可视化object的预测结果
+"""
+def visualize_object(pred_file_path, all_objects, all_object_labels):
+    with open(pred_file_path,'w') as f:
+        for item in zip(all_objects,all_object_labels):
+            objects,labels = item
+            f.write(str(objects) +"\n")
+            f.write(str(labels) + "\n")
+            f.write("\n")
+
+
+
+def evaluate(model_object,dev_data_loader,criterion,pred_file_path):
+    # Does predictions.
+    logger.info("\n====================start  evaluating ====================")   
+    tokenizer = BertTokenizerFast.from_pretrained("/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch")    
+    # 将object的预测结果写到文件中
+    if os.path.exists(pred_file_path):# 因为下面是追加写入到文件中，所以
+        os.remove(pred_file_path)
+    total_loss = 0 # 总损失
+    invalid_num = 0 # 预测失败的个数
+    all_objects = []
+    all_object_labels = []
+    with t.no_grad():
+        for batch in tqdm(dev_data_loader):            
+            input_ids,token_type_ids,attention_mask, batch_origin_info,labels,batch_offset_mapping = batch
+
+            object_input_ids, object_token_type_ids,object_attention_mask, object_labels,object_origin_info,batch_object_offset_mapping= from_dict2object(batch_subjects=None, batch_origin_dict=batch_origin_info,tokenizer=tokenizer,max_length=args.max_seq_length,pad_to_max_length = True)
+
+            object_input_ids = t.tensor(object_input_ids).cuda()
+            object_token_type_ids = t.tensor(object_token_type_ids).cuda()
+            object_attention_mask = t.tensor(object_attention_mask).cuda()            
+            object_labels = t.tensor(object_labels).cuda()
+            logits_2 = model_object(input_ids = object_input_ids,
+                                    token_type_ids=object_token_type_ids,
+                                    attention_mask=object_attention_mask
+                                    ) # size [batch_size,max_seq_len,object_class_num]
+            logits = logits_2 #备份用于后面decode 
+            logits_2 = logits_2.view(-1,object_class_num)
+            object_labels = object_labels.view(-1)  
+            cur_loss = criterion(logits_2,object_labels)
+
+
+            total_loss += cur_loss
+            # 得到预测到的 subject            
+            batch_objects, batch_object_labels = decode_object(logits=logits,
+                                                               id2object_map=id2object_map,
+                                                               batch_object_input_ids=object_input_ids,
+                                                               tokenizer=tokenizer,
+                                                               batch_object_origin_info=object_origin_info,
+                                                               batch_object_offset_mapping=batch_object_offset_mapping
+                                                               )
+            
+            all_objects.extend(batch_objects)
+            all_object_labels.extend(batch_object_labels)
+    
+        # 写入到文件中(w)
+        visualize_object(pred_file_path, all_objects, all_object_labels)
+        recall,precision,f1 = cal_object_metric(all_objects,args.dev_data_path)
+        logger.info(f"recall={recall},precision={precision},f1={f1}")
+        print(f"recall={recall},precision={precision},f1={f1}")
+        avg_loss = total_loss / len(dev_data_loader)
+        logger.info(f"平均损失是：{avg_loss}")
+        logger.info(f"未预测到的object 数目是：{invalid_num}")
+
 
 
 def do_train():
-    # ========================== subtask 1. 预测subject ==========================
-    # 这一部分我用一个 NER 任务来做，但是原任务用的是 start + end 的方式，原理是一样的
-    # ========================== =================== ==========================    
-    name_or_path = "/home/lawson/pretrain/bert-base-chinese"
-    model_object = ObjectModel(name_or_path,768,object_class_num)        
-    model_object = model_object.cuda()
-
-    tokenizer = BertTokenizer.from_pretrained("/home/lawson/pretrain/bert-base-chinese")
-    criterion = nn.CrossEntropyLoss() # 使用交叉熵计算损失
-
-    if os.path.exists(args.init_checkpoint):
-        print(f"加载模型:{args.init_checkpoint}")
+    # ========================== subtask 1. 预测 object ==========================    
+    if args.init_checkpoint is not None and os.path.exists(args.init_checkpoint):
+        logger.info(f"加载模型:{args.init_checkpoint}")
         model_object.load_state_dict(t.load(args.init_checkpoint))
-
+    
+    
     # Loads dataset.
-    train_dataset = SubjectDataset.from_file(
-        os.path.join(args.data_path, 'train_data.json'),
+    train_dataset = TrainSubjectDataset.from_file(
+        args.train_data_path,
         tokenizer,
         args.max_seq_length,
         True
@@ -118,7 +212,6 @@ def do_train():
     #     shuffle=True,
     #     drop_last=True 
     #     )
-    collator = SubjectDataCollator()
     train_data_loader = DataLoader(        
         dataset=train_dataset,
         #batch_sampler=train_batch_sampler,
@@ -126,25 +219,10 @@ def do_train():
         collate_fn=collator, # 重写一个 collator
         shuffle=True
         )
-    
-    dev_file_path = os.path.join(args.data_path, 'dev_data_200.json')
-    dev_dataset = SubjectDataset.from_file(dev_file_path,
-                                         tokenizer,
-                                         args.max_seq_length,
-                                         True
-                                         )
-        
-    dev_data_loader = DataLoader(
-        dataset=dev_dataset,
-        batch_size= args.batch_size,
-        #batch_sampler=dev_batch_sampler,
-        collate_fn=collator,   
-    )
-    
-    
+
     # 需要合并所有模型的参数    
     optimizer = t.optim.AdamW(
-        [{'params':model_object.parameters(),'lr':5e-6},        
+        [{'params':model_object.parameters(),'lr':2e-5},        
         ],
         #weight_decay=args.weight_decay,        
         ) 
@@ -157,20 +235,26 @@ def do_train():
     
     # Starts training.
     global_step = 0
-    logging_steps = 50
-    save_steps = 10000
+    logging_steps = 500
+    save_steps = 5000
     tic_train = time.time()
-    for epoch in range(args.num_train_epochs):
-        print("\n=====start training of %d epochs=====" % epoch)
+    for epoch in tqdm(range(args.num_train_epochs)):
+        logger.info("\n=====start training of %d epochs=====" % epoch)
         tic_epoch = time.time()
         # 设置为训练模式        
-        model_object.train() # 根据subject 预测object        
-        for step, batch in tqdm(enumerate(train_data_loader)):
-            input_ids,token_type_ids,attention_mask, labels,origin_info = batch
+        model_object.train() # 根据subject 预测object     
+        step = 1   
+        for batch in tqdm(train_data_loader):
+            input_ids,token_type_ids,attention_mask, batch_origin_info,labels, batch_offset_mapping = batch
             
+            # 可以把上面这些数据从cuda中移出
+
+
             # ====== 根据origin_info 得到 subtask 2 的训练数据 ==========
             # 这里的object_input_ids 的size 不再是args.batch_size ，可能比这个稍大
-            object_input_ids, object_token_type_ids,object_attention_mask, object_labels = from_dict(batch_subjects=None, batch_origin_dict=origin_info,tokenizer=tokenizer,max_length=args.max_seq_length,pad_to_max_length = True)
+
+            object_input_ids, object_token_type_ids,object_attention_mask, object_labels,object_origin_info,object_offset_mapping= from_dict2object(batch_subjects=None, batch_origin_dict=batch_origin_info,tokenizer=tokenizer,max_length=args.max_seq_length,pad_to_max_length = True)
+
             object_input_ids = t.tensor(object_input_ids).cuda()
             object_token_type_ids = t.tensor(object_token_type_ids).cuda()
             object_attention_mask = t.tensor(object_attention_mask).cuda()            
@@ -190,30 +274,33 @@ def do_train():
             loss_item = loss.item()
 
             if global_step % logging_steps == 0 :
-                print(
+                logger.info(
                     "epoch: %d / %d, steps: %d / %d, loss: %f , speed: %.2f step/s"
                     % (epoch, args.num_train_epochs, step, steps_by_epoch,
                        loss_item,
                        logging_steps / (time.time() - tic_train))
                        )
                 tic_train = time.time()
-            
-                print("saving checkpoing model_subject_%d.pdparams to %s " %
+
+            if global_step % save_steps == 0:
+                logger.info("saving checkpoing model_object_%d_bert.pdparams to %s " %
                         (global_step, args.output_dir))
                 t.save(model_object.state_dict(),
-                            os.path.join(args.output_dir,"model_subject_%d.pdparams" % global_step))            
-                 
-            global_step += 1
-        
+                            os.path.join(args.output_dir,"model_object_%d_bert.pdparams" % global_step))
+            step+=1 
+            global_step += 1            
+            viz_object.line([loss_item], [global_step], win=win, update="append")
         t.save(model_object.state_dict(),os.path.join(args.output_dir,
-                            "model_object_%d.pdparams" % global_step))
-        print("\n=====training complete=====")
+                            "model_object_%d_bert.pdparams" % global_step))
+        logger.info("\n=====training complete=====")
 
 
 if __name__ == "__main__":
     set_random_seed(args.seed)
     # 指定GPU设备    
-    device = t.device("cuda" if t.cuda.is_available() and not args.n_gpu else "cpu")    
+    device = t.device("cuda" if t.cuda.is_available() and not args.n_gpu else "cpu")
 
-    if args.do_train:        
+    if args.do_train:
         do_train()
+        pred_file_path = "/home/lawson/program/DuIE_py/data/object_predict.txt"
+        #evaluate(model_object,dev_data_loader,criterion,pred_file_path)
