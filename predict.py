@@ -322,7 +322,9 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
     # Does predictions.
     logger.info("\n====================start predicting====================")
     bert_name_or_path = "/home/lawson/pretrain/bert-base-chinese"
+    roberta_name_or_path = "/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch"    
     model_subject = SubjectModel(bert_name_or_path,768,out_fea=subject_class_num-1)
+    #model_subject = SubjectModel(roberta_name_or_path,768,out_fea=subject_class_num)
     model_subject.load_state_dict(t.load(model_subject_path))
     model_subject = model_subject.cuda()    
 
@@ -330,7 +332,6 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
     model_object = model_object.cuda()
     model_object.load_state_dict(t.load(model_object_path))
 
-    roberta_name_or_path = "/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch"
     model_relation = RelationModel(roberta_name_or_path,relation_class_num)
     model_relation = model_relation.cuda()
     model_relation.load_state_dict(t.load(model_relation_path))
@@ -359,7 +360,10 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
     model_object.eval()
     model_relation.eval()
     # 将subject的预测结果写到文件中
-    file_path = "./data/subject_predict.txt"    
+    file_path = "/home/lawson/program/DuIE_py/data/subject_predict.txt"
+    batch_file_path = "/home/lawson/program/DuIE_py/data/subject_object_relation.txt" 
+    if os.path.exists(batch_file_path):
+        os.remove(batch_file_path)
     res = [] # 最后的预测结果
     invalid_num = 0 # 预测失败的个数
     with t.no_grad():
@@ -458,17 +462,30 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
                         batch_object_labels,# 5
                         batch_relations,
                         batch_origin_info
-            )        
+            )
             res.extend(cur_res)
 
-    # 写出最后的结果    
+            # 分别写出三步的结果
+            with open(batch_file_path,'a') as f:
+                a = str(batch_subjects)
+                b = str(batch_objects)
+                c = str(batch_relations)
+                f.write(a+"\n")
+                f.write(b+"\n")
+                f.write(c+"\n")
+                f.write("\n")
+
+    # 写出最后的预测结果
     with open(predict_file_path,"w",encoding="utf-8") as f:
         for line in res:        
             json_str = json.dumps(line,ensure_ascii=False)
+            # TODO: 这个地方需要修改一下
             json_str=json_str[1:-1]
             #print(json_str)
             f.write(json_str)
-            f.write('\n')          
+            f.write('\n')
+
+    
     logger.info(f"未预测到的个数是：{invalid_num}")
     logger.info("=====predicting complete=====")
 
@@ -484,4 +501,4 @@ if __name__ == "__main__":
         model_object_path = args.model_object_path
         model_relation_path = args.model_relation_path
         do_predict(model_subject_path,model_object_path,model_relation_path)
-        #predict_subject_object(model_subject_path,model_object_path)        
+        #predict_subject_object(model_subject_path,model_object_path)
