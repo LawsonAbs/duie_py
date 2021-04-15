@@ -221,7 +221,7 @@ params:
 '''
 def parse_subject_label(spo_list, subject_map, tokens, tokenizer,object_map):    
     # 将下面这些object数据排除掉，因为这些object 大都是谓语，不可能做subject 
-    exclude = ['成立日期','获奖','上映时间','票房','海拔','修业年限','人口数量','面积','注册资本','邮政编码','占地面积','专业代码']
+    #exclude = ['成立日期','获奖','上映时间','票房','海拔','修业年限','人口数量','面积','注册资本','邮政编码','占地面积','专业代码']
     seq_len = len(tokens)
     # initialize tag
     labels = [0 for i in range(seq_len)]
@@ -236,9 +236,12 @@ def parse_subject_label(spo_list, subject_map, tokens, tokenizer,object_map):
         # TODO:这里其实存在一个问题，就是如果 subject 在text中多次出现，那么该怎么办？ => 这里的处理是break
         for i,word in enumerate(tokens): 
             if tokens[i:i+subject_len] == subject_val_tokens:
-                labels[i] = subject_map[subject_type] # 'B_图书作品'
+                #labels[i] = subject_map[subject_type] # 'B_图书作品'
+                #labels[i] = 1 # 仅仅改为1 
+                labels[i] = subject_map["B_"+subject_type] # B_
                 for j in range(i+1,i+subject_len):
-                    labels[j] = 1 # 'I'
+                    #labels[j] = 1 # 'I'
+                    labels[j] = subject_map["I_"+subject_type]
                 break
 
         # ========== 找 object 的标签 ==========
