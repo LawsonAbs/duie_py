@@ -203,9 +203,10 @@ def get_precision_recall_f1(golden_file, predict_file):
 
 """
 功能：由 预测subject的label 得到实体
-
+适用的情况是 不同的B标签，统一的I/O标签，
 params:
  origin_text:原文本，用于消除不认识的字变成 [UNK] 的问题
+
 """
 def decode_subject(logits,id2subject_map,input_ids,tokenizer,batch_origin_info,batch_offset_mapping):
     m = LogSoftmax(dim=-1)
@@ -250,7 +251,7 @@ def decode_subject(logits,id2subject_map,input_ids,tokenizer,batch_origin_info,b
                 # 后处理部分之删除不符合规则的数据
                 # 后处理部分之判断subject 的长度：如果长度大于1的才放进去
                 if (not is_year_month_day(cur_subject) 
-                    and (len(cur_subject)> 1)
+                    #and (len(cur_subject)> 1)
                     and cur_subject_label != 19 # 如果不是第19 类（杂类），那么就放入其中
                     ):
                     subjects.append(cur_subject)                                
@@ -264,6 +265,229 @@ def decode_subject(logits,id2subject_map,input_ids,tokenizer,batch_origin_info,b
     return batch_subjects,batch_labels
 
 
+
+
+def decode_subject_2(logits,id2subject_map,input_ids,tokenizer,batch_origin_info,batch_offset_mapping):
+    m = LogSoftmax(dim=-1)
+    a = m(logits)
+    batch_indexs = a.argmax(-1) # 在该维度找出值最大的，就是预测出来的标签    
+    batch_subjects =[]
+    batch_labels = []    
+    for i,indexs in enumerate(batch_indexs): # 找出index 
+        offset_mapping  = batch_offset_mapping[i] # 拿到当前的offset_mapping
+        origin_info = batch_origin_info[i]
+        origin_text = origin_info['text']
+        tokens = tokenizer.convert_ids_to_tokens(input_ids[i]) # 得到原字符串
+        subjects = [] # 预测出最后的结果
+        labels = []
+        cur_subject = ""
+        for j,ind in enumerate(indexs):            
+            if ind == 1 and cur_subject!="": # 说明是中间部分，且 cur_subject 不为空
+                offset = offset_mapping[j]
+                left,right = tuple(offset)
+                if( 
+                    (is_english_char_or_(cur_subject[-1]) or ('9'>= cur_subject[-1] and '0'<= cur_subject[-1]))
+                    and not(tokens[j].startswith("#"))
+                    and is_english_char_or_(origin_text[left]) # 如果其后也是英文
+                    ):
+                    cur_subject+=" "
+                cur_subject += origin_text[left:right]
+            elif ind == 0 and cur_subject!="": # 将 cur_subject 放入到 subjects 中
+                cur_subject = cur_subject.replace("#","") # 替换掉，因为这会干扰后面的实现
+                # 后处理部分之删除不符合规则的数据
+                # 后处理部分之判断subject 的长度：如果长度大于1的才放进去
+                if (not is_year_month_day(cur_subject) 
+                    and (len(cur_subject)> 1)                    
+                    ):
+                    subjects.append(cur_subject)                                                    
+                    labels.append("I")
+                cur_subject = ""            
+            if ind == 1 and cur_subject=="": # 开头
+                offset = offset_mapping[j]
+                left,right = tuple(offset)                
+                cur_subject += origin_text[left:right]
+        
+        batch_subjects.append(subjects)
+        batch_labels.append(labels)
+    # 然后再找出对应的内容    
+    return batch_subjects,batch_labels
+
+'''
+使用完整的BIO标签做
+'''
+def decode_subject_3(logits,id2subject_map,input_ids,tokenizer,batch_origin_info,batch_offset_mapping):
+    m = LogSoftmax(dim=-1)
+    a = m(logits)
+    batch_indexs = a.argmax(-1) # 在该维度找出值最大的，就是预测出来的标签    
+    batch_subjects =[]
+    batch_labels = []    
+    for i,indexs in enumerate(batch_indexs): # 找出index 
+        offset_mapping  = batch_offset_mapping[i] # 拿到当前的offset_mapping
+        origin_info = batch_origin_info[i]
+        origin_text = origin_info['text']
+        tokens = tokenizer.convert_ids_to_tokens(input_ids[i]) # 得到原字符串
+        subjects = [] # 预测出最后的结果
+        labels = []
+        cur_subject = ""
+        cur_label_id = -100 # 赋初值
+        for j,ind in enumerate(indexs):
+            if ind %2 == 1: # B标签
+                if cur_subject == "" : # 是B且是开头
+                    cur_label_id = ind.item() # 拿到标签的id
+                    offset = offset_mapping[j]
+                    left,right = tuple(offset)
+                    # 判断上一个字符是否是字母结束（英文）/数字并且当前的是否不是#开头 => 需要安排一个空格
+                    if (cur_subject!="" 
+                        and ( is_english_char_or_(cur_subject[-1]) or ('9'>= cur_subject[-1] and '0'<= cur_subject[-1]))
+                        and not(tokens[j].startswith("#"))
+                        and is_english_char_or_(origin_text[left]) # 如果其后也是英文 
+                        ):
+                        cur_subject+=" "
+                    cur_subject += origin_text[left:right]
+                    cur_subject_label = id2subject_map[str(cur_label_id)]
+                    
+                elif cur_subject != "": # 是另一组B的开始
+                    # 先放之前的内容
+                    cur_subject = cur_subject.replace("#","")
+                    # 后处理部分之删除不符合规则的数据                    
+                    if (not is_year_month_day(cur_subject) ):
+                        subjects.append(cur_subject)                        
+                        labels.append(cur_subject_label)                    
+                    cur_subject= ""
+
+
+                    # 接着安置当下的内容
+                    offset = offset_mapping[j]
+                    left,right = tuple(offset)
+                    cur_subject += origin_text[left:right]
+                    cur_label_id = ind.item() # 拿到标签的id
+                    cur_subject_label = id2subject_map[str(cur_label_id)] # 拿到标签
+
+            elif ind %2 ==0 and ind : # I标签
+                if ind.item() == cur_label_id + 1: # 如果能够和上一个B匹配
+                    cur_subject = cur_subject.replace("#","") # 替换掉，因为这会干扰后面的实现
+                    offset = offset_mapping[j]
+                    left,right = tuple(offset)
+                    # 判断上一个字符是否是字母结束（英文）/数字并且当前的是否不是#开头 => 需要安排一个空格
+                    if (cur_subject!="" 
+                        and ( is_english_char_or_(cur_subject[-1]) or ('9'>= cur_subject[-1] and '0'<= cur_subject[-1]))
+                        and not(tokens[j].startswith("#"))
+                        and is_english_char_or_(origin_text[left]) # 如果其后也是英文 
+                        ):
+                        cur_subject+=" "
+                    cur_subject += origin_text[left:right]
+
+                elif cur_subject!="":# 如果不能匹配且之前有内容
+                    cur_subject = cur_subject.replace("#","")                    
+                    # 后处理部分之删除不符合规则的数据                    
+                    if (not is_year_month_day(cur_subject) ):
+                        subjects.append(cur_subject)                        
+                        labels.append(cur_subject_label)                    
+                    cur_subject= ""
+                    cur_label_id = -100 # 也得重置
+
+            elif ind == 0 and cur_subject!='': # O标签
+                cur_subject = cur_subject.replace("#","")                    
+                # 后处理部分之删除不符合规则的数据
+                # 01.不是年月日
+                if (not is_year_month_day(cur_subject) ):
+                    subjects.append(cur_subject)                        
+                    labels.append(cur_subject_label)
+                cur_subject= ""
+                cur_label_id = -100
+
+        batch_subjects.append(subjects)
+        batch_labels.append(labels)
+    # 然后再找出对应的内容    
+    return batch_subjects,batch_labels
+
+
+
+def decode_subject_crf(batch_logits,id2subject_map,input_ids,tokenizer,batch_origin_info,batch_offset_mapping):            
+    batch_subjects =[]
+    batch_labels = []    
+    for i,indexs in enumerate(batch_logits): # 找出index 
+        offset_mapping  = batch_offset_mapping[i] # 拿到当前的offset_mapping
+        origin_info = batch_origin_info[i]
+        origin_text = origin_info['text']
+        tokens = tokenizer.convert_ids_to_tokens(input_ids[i]) # 得到原字符串
+        subjects = [] # 预测出最后的结果
+        labels = []
+        cur_subject = ""
+        cur_label_id = -100 # 赋初值
+        for j,ind in enumerate(indexs):
+            if ind %2 == 1: # B标签
+                if cur_subject == "" : # 是B且是开头
+                    cur_label_id = ind.item() # 拿到标签的id
+                    offset = offset_mapping[j]
+                    left,right = tuple(offset)
+                    # 判断上一个字符是否是字母结束（英文）/数字并且当前的是否不是#开头 => 需要安排一个空格
+                    if (cur_subject!="" 
+                        and ( is_english_char_or_(cur_subject[-1]) or ('9'>= cur_subject[-1] and '0'<= cur_subject[-1]))
+                        and not(tokens[j].startswith("#"))
+                        and is_english_char_or_(origin_text[left]) # 如果其后也是英文 
+                        ):
+                        cur_subject+=" "
+                    cur_subject += origin_text[left:right]
+                    cur_subject_label = id2subject_map[str(cur_label_id)]
+                    
+                elif cur_subject != "": # 是另一组B的开始
+                    # 先放之前的内容
+                    cur_subject = cur_subject.replace("#","")
+                    # 后处理部分之删除不符合规则的数据                    
+                    if (not is_year_month_day(cur_subject) ):
+                        subjects.append(cur_subject)                        
+                        labels.append(cur_subject_label)                    
+                    cur_subject= ""
+
+
+                    # 接着安置当下的内容
+                    offset = offset_mapping[j]
+                    left,right = tuple(offset)
+                    cur_subject += origin_text[left:right]
+                    cur_label_id = ind.item() # 拿到标签的id
+                    cur_subject_label = id2subject_map[str(cur_label_id)] # 拿到标签
+
+            elif ind %2 ==0 and ind : # I标签
+                if ind.item() == cur_label_id + 1: # 如果能够和上一个B匹配
+                    cur_subject = cur_subject.replace("#","") # 替换掉，因为这会干扰后面的实现
+                    offset = offset_mapping[j]
+                    left,right = tuple(offset)
+                    # 判断上一个字符是否是字母结束（英文）/数字并且当前的是否不是#开头 => 需要安排一个空格
+                    if (cur_subject!="" 
+                        and ( is_english_char_or_(cur_subject[-1]) or ('9'>= cur_subject[-1] and '0'<= cur_subject[-1]))
+                        and not(tokens[j].startswith("#"))
+                        and is_english_char_or_(origin_text[left]) # 如果其后也是英文 
+                        ):
+                        cur_subject+=" "
+                    cur_subject += origin_text[left:right]
+
+                elif cur_subject!="":# 如果不能匹配且之前有内容
+                    cur_subject = cur_subject.replace("#","")                    
+                    # 后处理部分之删除不符合规则的数据                    
+                    if (not is_year_month_day(cur_subject) ):
+                        subjects.append(cur_subject)                        
+                        labels.append(cur_subject_label)                    
+                    cur_subject= ""
+                    cur_label_id = -100 # 也得重置
+
+            elif ind == 0 and cur_subject!='': # O标签
+                cur_subject = cur_subject.replace("#","")                    
+                # 后处理部分之删除不符合规则的数据
+                # 01.不是年月日
+                if (not is_year_month_day(cur_subject) ):
+                    subjects.append(cur_subject)                        
+                    labels.append(cur_subject_label)
+                cur_subject= ""
+                cur_label_id = -100
+
+        batch_subjects.append(subjects)
+        batch_labels.append(labels)
+    # 然后再找出对应的内容    
+    return batch_subjects,batch_labels
+
+
+
 """
 功能：由 预测object 的labels 得到object
 
@@ -273,16 +497,17 @@ params:
  ...
  object_origin_info: 用于帮助恢复UNK 字
 
-01.
+01.这些参数都是batch 级别的
 """
-def decode_object(logits,id2object_map,tokenizer,object_input_ids,object_origin_info,object_offset_mapping):
+def decode_object(logits,id2object_map,tokenizer,batch_object_input_ids,batch_object_origin_info,batch_object_offset_mapping):
     m = LogSoftmax(dim=-1)
     a = m(logits)
-    batch_indexs = a.argmax(2) # 在该维度找出值最大的，就是预测出来的标签
+    batch_indexs = a.argmax(-1) # 在该维度找出值最大的，就是预测出来的标签
     batch_objects = [] # 预测出最后的结果
     batch_labels = []    
-    for item in zip(batch_indexs,object_input_ids,object_offset_mapping,object_origin_info):
-        indexs,input_ids,offset , text_raw = item
+    for item in zip(batch_indexs,batch_object_input_ids,batch_object_offset_mapping,batch_object_origin_info):
+        indexs,input_ids,offset , origin_info = item
+        text_raw = origin_info['text']
         tokens = tokenizer.convert_ids_to_tokens(input_ids) # 得到原字符串
         objects = []
         labels = []
@@ -339,13 +564,17 @@ def post_process(batch_subjects,
         subjects,subject_labels,origin_info = item_1        
         cur_res ={} # 重置
         cur_res['text'] = origin_info['text']
-        spo_list = [] # 是一个列表   
+        spo_list = [] # 是一个列表
+        if len(subjects)==0: # 如果subjects 的结果为空
+            # cnt += len(batch_objects[cur_index]) # 因为subjects 为空时，是没有训练数据的
+            cur_index += 1
+            continue
         # step2. 从某条样本中取出所有的 subjects 以及其标签
         for item_2 in zip(subjects,subject_labels):  
             subject,subject_label = item_2
             # 取该subjects 对应的objects 和 objects_labels
-            objects = batch_objects[cur_index:cur_index+1][0]  # 和subject 对应在一起的所有 object
-            objects_labels = batch_objects_labels[cur_index:cur_index+1][0]            
+            objects = batch_objects[cur_index]  # 和subject 对应在一起的所有 object
+            objects_labels = batch_objects_labels[cur_index]
             
             # step3. 从上述的 objects 以及labels 中对应取出单个
             for item_3 in zip(objects,objects_labels): 
@@ -466,6 +695,7 @@ def addBookName(text):
         if char == "《":
             flag = 1
         elif char =="》":
+            cur_text = cur_text.strip() # 去掉空格
             target.append(cur_text)
             cur_text = ""
             flag = 0
@@ -478,7 +708,7 @@ def addBookName(text):
 def is_year_month_day(subject):
     if ('年' in subject and '月' in subject and '日' in subject):
         return True
-    if ('年' in subject and '月'  ):
+    if ('年' in subject and '月' in subject ):
         return True
     if ('月' in subject and '日' in subject):
         return True
