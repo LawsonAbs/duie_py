@@ -66,7 +66,7 @@ logger = logging.getLogger("predict")
 
 
 # Reads subject_map.
-subject_map_path = os.path.join(args.data_path, "subject2id.json")
+subject_map_path = os.path.join(args.data_path, "subject2id_1.json")
 if not (os.path.exists(subject_map_path) and os.path.isfile(subject_map_path)):
     sys.exit("{} dose not exists or is not a file.".format(subject_map_path))
 with open(subject_map_path, 'r', encoding='utf8') as fp:
@@ -94,7 +94,7 @@ relation_class_num = len(relation_map.keys())# 得出 relation 的 个数
 
 
 # Reads subject_map.
-id2subject_map_path = os.path.join(args.data_path, "id2subject.json")
+id2subject_map_path = os.path.join(args.data_path, "id2subject_1.json")
 if not (os.path.exists(id2subject_map_path) and os.path.isfile(id2subject_map_path)):
     sys.exit("{} dose not exists or is not a file.".format(id2subject_map_path))
 with open(id2subject_map_path, 'r', encoding='utf8') as fp:
@@ -478,14 +478,11 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
     # 写出最后的预测结果
     with open(predict_file_path,"w",encoding="utf-8") as f:
         for line in res:        
-            json_str = json.dumps(line,ensure_ascii=False)
-            # TODO: 这个地方需要修改一下
-            json_str=json_str[1:-1]
+            json_str = json.dumps(line,ensure_ascii=False)                        
             #print(json_str)
             f.write(json_str)
             f.write('\n')
 
-    
     logger.info(f"未预测到的个数是：{invalid_num}")
     logger.info("=====predicting complete=====")
 
