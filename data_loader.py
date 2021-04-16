@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 import collections
 import json
 import logging
@@ -221,7 +222,8 @@ params:
 '''
 def parse_subject_label(spo_list, subject_map, tokens, tokenizer,object_map):    
     # 将下面这些object数据排除掉，因为这些object 大都是谓语，不可能做subject 
-    #exclude = ['成立日期','获奖','上映时间','票房','海拔','修业年限','人口数量','面积','注册资本','邮政编码','占地面积','专业代码']
+    exclude = ['成立日期','获奖','上映时间','票房','海拔','修业年限','人口数量','面积','注册资本','邮政编码','占地面积','专业代码']
+    include= ['人物','国家']
     seq_len = len(tokens)
     # initialize tag
     labels = [0 for i in range(seq_len)]
@@ -245,27 +247,27 @@ def parse_subject_label(spo_list, subject_map, tokens, tokenizer,object_map):
                 break
 
         # ========== 找 object 的标签 ==========
-        # predicate = spo['predicate']
-        # if predicate not in exclude:            
-        #     object_dict = spo['object']  # a dict
-        #     objects = list(object_dict.values()) # 装入当前这个 spo 中的所有object        
-        #     object_types = list(spo['object_type'].values())
-        #     for item in zip(objects,object_types):
-        #         object,object_type = item
-        #         object_val_tokens = tokenizer.tokenize(object)
-        #         object_len = len(object_val_tokens)                      
-        #         # 遍历找出下标
-        #         # TODO:这里其实存在一个问题，就是如果 subject 在text中多次出现，那么该怎么办？ => 照标不误
-        #         for i,word in enumerate(tokens): 
-        #             if tokens[i:i+object_len] == object_val_tokens:
-        #                 # 如果object_type 出现在了subject_map 中，那么就继续使用subject_map中的标签，否则使用19
-        #                 if object_type not in subject_map.keys():
-        #                     labels[i] = 19  # 在 subject_map 之外的数据，统统设置为19
-        #                 else:
-        #                     labels[i] = subject_map[object_type]
-        #                 for j in range(i+1,i+object_len):
-        #                     labels[j] = 1 # 'I'
-        #                 break
+        predicate = spo['predicate']
+        if predicate in include:
+            object_dict = spo['object']  # a dict
+            objects = list(object_dict.values()) # 装入当前这个 spo 中的所有object        
+            object_types = list(spo['object_type'].values())
+            for item in zip(objects,object_types):
+                object,object_type = item
+                object_val_tokens = tokenizer.tokenize(object)
+                object_len = len(object_val_tokens)                      
+                # 遍历找出下标
+                # TODO:这里其实存在一个问题，就是如果 subject 在text中多次出现，那么该怎么办？ => 照标不误
+                for i,word in enumerate(tokens): 
+                    if tokens[i:i+object_len] == object_val_tokens:
+                        # 如果object_type 出现在了subject_map 中，那么就继续使用subject_map中的标签，否则使用19
+                        if object_type not in subject_map.keys():
+                            labels[i] = 19  # 在 subject_map 之外的数据，统统设置为19
+                        else:
+                            labels[i] = subject_map[object_type]
+                        for j in range(i+1,i+object_len):
+                            labels[j] = 1 # 'I'
+                        break
     return labels
 
 
@@ -1098,21 +1100,23 @@ def process_example_relation_train(example):
     # 每一条 spo 都会产生一个样本
     for spo in spo_list:
         subject = spo['subject']  # dict
-        
+        object_keys = list(spo['object'].keys()) # 找到所有的key
         object_vals = list(spo['object'].values()) 
         object_types = list(spo['object_type'].values())
-        if len(object_vals) > 1: # 复杂的结构体            
-            for item in zip(object_vals,object_types):                
-                cur_spo = spo
-                cur_spo.pop("object_type")
-                cur_spo.pop("object")
-                object ,object_type = item
-                object_val = "。" + object
-                text = subject + '。' + object_val + text_raw
+        predicate = spo['predicate']
+        if predicate in ['上映时间','饰演','获奖','配音','票房'] : # 复杂的结构体
+            for item in zip(object_vals,object_types,object_keys):                
+                cur_spo = {}
+                
+                
+                object ,object_type,object_key = item
+                text = subject +"。"+ object + '。'+ text_raw
                 cur_spo['object_type'] = {"@value":object_type}
                 cur_spo['object'] = {"@value":object}
+                cur_spo['predicate'] = predicate+"_"+object_key
+                cur_spo['subject'] = subject                
                 cur_example = {"spo_list":cur_spo,"text":text}
-                examples.append(cur_example)        
+                examples.append(cur_example)
         else: # 简单结构
             object_val = "。".join(object_vals) + "。"
             text = subject + '。' + object_val + text_raw
@@ -1194,8 +1198,8 @@ def from_dict2_relation(batch_subjects,
               tokenizer: BertTokenizerFast,
               max_length: Optional[int] = 512,                            
               ):
-   
-    with open("/home/lawson/program/DuIE_py/data/relation2id.json", 'r', encoding='utf8') as fp:
+   # 这里的关系必须使用 predicate2id.json
+    with open("/home/lawson/program/DuIE_py/data/predicate2id.json", 'r', encoding='utf8') as fp:
         relation_map = json.load(fp)
     chineseandpunctuationextractor = ChineseAndPunctuationExtractor()
 

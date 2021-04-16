@@ -32,7 +32,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from transformers import BertTokenizerFast, BertForSequenceClassification
 from transformers.utils.dummy_pt_objects import BertModel
 
-from data_loader import DuIEDataset, DataCollator, ObjectDataset,TrainSubjectDataset,TrainSubjectDataCollator
+from data_loader import  DataCollator,TrainSubjectDataset,TrainSubjectDataCollator
 from data_loader import PredictSubjectDataset,PredictSubjectDataCollator
 from data_loader import get_negative_relation_data,from_dict2object
 from utils import decode_subject,decode_object, decoding, find_entity, get_precision_recall_f1, write_prediction_results
@@ -211,7 +211,7 @@ def do_train():
     
     # Starts training.
     global_step = 0
-    logging_steps = 50
+    logging_steps = 100
     save_steps = 5000
     tic_train = time.time()
     viz = Visdom()
@@ -221,7 +221,7 @@ def do_train():
         tic_epoch = time.time()
         # 设置为训练模式    
         model_relation.train() # 根据subject+object 预测 relation
-        total_loss = 0
+        logger_loss = 0
         step = 1
         for batch in tqdm(train_data_loader):
             batch_input_ids,batch_token_type_ids,batch_attention_mask, batch_origin_info,batch_labels,batch_offset_mapping = batch            
@@ -247,32 +247,30 @@ def do_train():
             #lr_scheduler.step()
             optimizer.zero_grad()
             loss_item = loss.item()            
-            avg_loss = loss_item / relation_input_ids.size(0)
+            logger_loss += loss_item
             logger.info(f"loss:{loss_item}")
-            
+
             # 打日志
-            if global_step % logging_steps == 0 :
+            if global_step % logging_steps == 0 and global_step:
                 logger.info(
                     f"epoch:{epoch}/{args.num_train_epochs},  steps:{step}/{steps_by_epoch},   loss:{loss_item},  speed: {logging_steps / (time.time() - tic_train)} step/s")
-                tic_train = time.time()
-                viz.line([avg_loss], [global_step], win=win, update="append")
-            
-            # 保存模型
-            if global_step % save_steps == 0 and global_step != 0 :                
-                logger.info(f"saving checkpoing model_subject_{global_step}.pdparams to {args.output_dir}")
-                cur_model_name = os.path.join(args.output_dir,"model_subject_%d_roberta.pdparams" % (global_step))
-                t.save(model_relation.state_dict(),cur_model_name)
+                tic_train = time.time()                
+                viz.line([logger_loss], [global_step], win=win, update="append")
+                logger_loss = 0
+                        
 
-                # 使用dev 数据集评测模型效果
-                pred_file_path = f"/home/lawson/program/DuIE_py/data/predict/dev_data_subject_predict_model_subject_{global_step}_roberta.txt"
-                #evaluate(model_relation,dev_data_loader,criterion,pred_file_path)
-                #recall,precision,f1 = cal_subject_metric(dev_data_file_path = "/home/lawson/program/DuIE_py/data/dev_data.json",pred_file_path=pred_file_path)
-                #logger.info(f"recall = {recall}, precision = {precision}, f1 = {f1}") 
+            # 使用dev 数据集评测模型效果
+            #pred_file_path = f"/home/lawson/program/DuIE_py/data/predict/dev_data_subject_predict_model_subject_{global_step}_roberta.txt"
+            #evaluate(model_relation,dev_data_loader,criterion,pred_file_path)
+            #recall,precision,f1 = cal_subject_metric(dev_data_file_path = "/home/lawson/program/DuIE_py/data/dev_data.json",pred_file_path=pred_file_path)
+            #logger.info(f"recall = {recall}, precision = {precision}, f1 = {f1}") 
             step+=1
             global_step += 1
 
-        t.save(model_relation.state_dict(),os.path.join(args.output_dir,
-                            "model_relation_%d_roberta.pdparams" % global_step))
+        # 每个epoch之后保存模型
+        logger.info(f"saving checkpoing model_subject_{global_step}.pdparams to {args.output_dir}")
+        cur_model_name = os.path.join(args.output_dir,"model_subject_%d_roberta.pdparams" % (global_step))
+        t.save(model_relation.state_dict(),cur_model_name)
         print("\n=====training complete=====")
 
 
@@ -302,6 +300,7 @@ def do_train_2(model_subject_path,model_object_path,model_relation_path):
     # Loads dataset.
      # Loads dataset.
     # 这里之所以使用 TrainSubjectDataset 是因为需要加载原始的数据，通过原始的数据才可以得到训练 relation 的数据
+    logger.info(f"Preprocessing data, loaded from {args.train_data_path}")
     train_dataset = TrainSubjectDataset.from_file(
         args.train_data_path,
         tokenizer,
@@ -391,8 +390,7 @@ def do_train_2(model_subject_path,model_object_path,model_relation_path):
                 #print("----- 未预测到subject ----------")
                 subject_invalid_num+=1
                 continue
-            
-            logger.info("\n====================start predicting object ====================")
+                        
             # 将subject的预测结果写到文件中                        
             object_invalid_num = 0 
             # ====== 根据origin_info 得到 subtask 2 的训练数据 ==========
@@ -461,6 +459,9 @@ def do_train_2(model_subject_path,model_object_path,model_relation_path):
                 avg_loss = batch_loss_item / 32 * 10
             else:
                 avg_loss = batch_loss_item / relation_input_ids.size(0) * 10
+            
+            if avg_loss > 2: # 重点关注一下这种损失的数据
+                logger.info(f"{batch_origin_info}")
             # 打日志
             if global_step % logging_steps == 0 :                
                 viz.line([avg_loss], [global_step], win=win, update="append")
@@ -485,11 +486,12 @@ def do_train_2(model_subject_path,model_object_path,model_relation_path):
 
 if __name__ == "__main__":
     set_random_seed(args.seed)
-    # 指定GPU设备    
+    # 指定GPU设备
     device = t.device("cuda" if t.cuda.is_available() and not args.n_gpu else "cpu")    
 
     if args.do_train:
-        model_subject_path = args.model_subject_path
-        model_object_path = args.model_object_path
-        model_relation_path = args.model_relation_path
-        do_train_2(model_subject_path,model_object_path,model_relation_path)
+        # model_subject_path = args.model_subject_path
+        # model_object_path = args.model_object_path
+        # model_relation_path = args.model_relation_path
+        #do_train_2(model_subject_path,model_object_path,model_relation_path)
+        do_train()
