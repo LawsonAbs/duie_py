@@ -515,16 +515,27 @@ def decode_object(logits,id2object_map,tokenizer,batch_object_input_ids,batch_ob
         for i,ind in enumerate(indexs):
             if ind > 1 : # 说明是一个标签的开始                
                 left,right = tuple(offset[i])
+                # 判断上一个字符是否是字母结束（英文）/数字并且当前的是否不是#开头 => 需要安排一个空格
+                if (cur_object!="" 
+                    and ( is_english_char_or_(cur_object[-1]) or ('9'>= cur_object[-1] and '0'<= cur_object[-1]))
+                    and not(tokens[i].startswith("#"))
+                    and is_english_char_or_(text_raw[left]) # 如果其后也是英文 
+                    ):
+                    cur_object+=" "
                 cur_object+= text_raw[left:right]
                 cur_object_label = id2object_map[str(ind.item())]
             if ind == 1 and cur_object!="": # 说明是中间部分，且 cur_subject 不为空
-                left,right = tuple(offset[i])                
+                left,right = tuple(offset[i])
+                if (cur_object!="" 
+                    and ( is_english_char_or_(cur_object[-1]) or ('9'>= cur_object[-1] and '0'<= cur_object[-1]))
+                    and not(tokens[i].startswith("#"))
+                    and is_english_char_or_(text_raw[left]) # 如果其后也是英文 
+                    ):
+                    cur_object+=" "
                 cur_object+= text_raw[left:right] 
             elif ind == 0 and cur_object!="": # 将 cur_subject 放入到 subjects 中
-                cur_object = cur_object.replace("#","")
-                cur_object_label = cur_object_label.replace("#","")
-
-                objects.append(cur_object)                
+                cur_object = cur_object.replace("#","")                
+                objects.append(cur_object)
                 labels.append(cur_object_label)
                 cur_object = ""
         batch_objects.append(objects)
