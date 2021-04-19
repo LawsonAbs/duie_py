@@ -488,9 +488,77 @@ def decode_subject_crf(batch_logits,id2subject_map,input_ids,tokenizer,batch_ori
 
 
 
-"""
-功能：由 预测object 的labels 得到object
+'''
+使用start-end 的方式标注
+'''
+def decode_subject_4(batch_logits,input_ids,tokenizer,batch_origin_info,batch_offset_mapping):            
+    m = LogSoftmax(dim=-1)
+    a = m(batch_logits)
+    batch_indexs = a.argmax(-1) # 在该维度找出值最大的，就是预测出来的标签
+    batch_subjects =[]
+    for i,indexs in enumerate(batch_indexs): # 找出index 
+        offset_mapping  = batch_offset_mapping[i] # 拿到当前的offset_mapping
+        origin_info = batch_origin_info[i]
+        origin_text = origin_info['text']
+        tokens = tokenizer.convert_ids_to_tokens(input_ids[i]) # 得到原字符串
+        subjects = [] # 预测出最后的结果        
+        cur_subject = ""
+        
+        for j,ind in enumerate(indexs):
+            if ind == 1: # start or end
+                if cur_subject == "" : # 是开头   
+                    offset = offset_mapping[j]
+                    left,right = tuple(offset)
+                    # 判断上一个字符是否是字母结束（英文）/数字并且当前的是否不是#开头 => 需要安排一个空格
+                    if (cur_subject!="" 
+                        and ( is_english_char_or_(cur_subject[-1]) or ('9'>= cur_subject[-1] and '0'<= cur_subject[-1]))
+                        and not(tokens[j].startswith("#"))
+                        and is_english_char_or_(origin_text[left]) # 如果其后也是英文 
+                        ):
+                        cur_subject+=" "
+                    cur_subject += origin_text[left:right]                    
+                    
+                elif cur_subject != "":
+                    # 先把之前的内容存下来
+                    offset = offset_mapping[j]
+                    left,right = tuple(offset)
+                    # 判断上一个字符是否是字母结束（英文）/数字并且当前的是否不是#开头 => 需要安排一个空格
+                    if (cur_subject!="" 
+                        and ( is_english_char_or_(cur_subject[-1]) or ('9'>= cur_subject[-1] and '0'<= cur_subject[-1]))
+                        and not(tokens[j].startswith("#"))
+                        and is_english_char_or_(origin_text[left]) # 如果其后也是英文 
+                        ):
+                        cur_subject+=" "
+                    cur_subject += origin_text[left:right]
+                                    
+                    cur_subject = cur_subject.replace("#","")
+                    # 后处理部分之删除不符合规则的数据                    
+                    if (not is_year_month_day(cur_subject) ):
+                        subjects.append(cur_subject)                                     
+                    cur_subject= "" # 重置
 
+            elif ind == 0 : 
+                if cur_subject!="" : # 说明是中间的部分
+                    offset = offset_mapping[j]
+                    left,right = tuple(offset)
+                    # 判断上一个字符是否是字母结束（英文）/数字并且当前的是否不是#开头 => 需要安排一个空格
+                    if (cur_subject!="" 
+                        and ( is_english_char_or_(cur_subject[-1]) or ('9'>= cur_subject[-1] and '0'<= cur_subject[-1]))
+                        and not(tokens[j].startswith("#"))
+                        and is_english_char_or_(origin_text[left]) # 如果其后也是英文 
+                        ):
+                        cur_subject+=" "
+                    cur_subject += origin_text[left:right]
+                        
+
+        batch_subjects.append(subjects)
+    # 然后再找出对应的内容    
+    return batch_subjects
+
+
+
+"""
+功能：由 预测object 的labels 得到object，
 params:
  logits: 预测的值，需要经过softmax处理，然后得到结果
  id2object_map
@@ -543,8 +611,11 @@ def decode_object(logits,id2object_map,tokenizer,batch_object_input_ids,batch_ob
     # 然后再找出对应的内容
     return batch_objects,batch_labels
 
+
+
+
 """
-功能： 将最后的结果解码并输出
+功能： 将最后的结果解码并输出，这个函数是在 relation2id.json 中适用的，同样适用于 predicate2id.json 文件
 """
 def decode_relation_class(logits,id2relation_map):
     m = LogSoftmax(dim=-1)
@@ -558,7 +629,7 @@ def decode_relation_class(logits,id2relation_map):
 
     
 """
-功能： 将最后的结果组装成一个 spo_list，只支持单条预测!!!
+功能： 将最后的结果组装成一个 spo_list，支持batch操作
 """
 def post_process(batch_subjects,
                      batch_subjects_labels,
@@ -675,6 +746,95 @@ def post_process(batch_subjects,
     
 
 """
+第2版后处理函数
+01.支持batch操作
+"""
+def post_process_2(batch_subjects,                     
+                     batch_objects,                     
+                     batch_relations,
+                     batch_origin_info
+                    ):
+    batch_res = []
+    cnt = 0
+    cur_index = 0
+    # step1.从所有的 batch 中取出一条样本
+    for item_1 in zip(batch_subjects,batch_origin_info): 
+        subjects,origin_info = item_1        
+        cur_res ={} # 重置
+        cur_res['text'] = origin_info['text']
+        spo_list = [] # 是一个列表
+        if len(subjects)==0: # 如果subjects 的结果为空
+            # cnt += len(batch_objects[cur_index]) # 因为subjects 为空时，是没有训练数据的
+            cur_index += 1
+            continue
+        # step2. 从某条样本中取出所有的 subjects 以及其标签
+        for subject in subjects:
+            # 取该subjects 对应的objects 和 objects_labels
+            objects = batch_objects[cur_index]  # 和subject 对应在一起的所有 object                        
+            # step3. 从上述的 objects 以及labels 中对应取出单个
+            for obj in objects: 
+                cur_dict = {} # cur_dict 都会被放入到spo_list 中                
+                cur_dict['predicate'] = batch_relations[cnt]
+                
+                # 说明预测的subject 和 object 一样，这样的数据没有意义
+                # 或者预测结果表明二者没有关系
+                if (subject == obj or cur_dict['predicate']=='O'):
+                    cnt+=1
+                    continue
+                val_1 = {} # 存放object                
+                if cur_dict['predicate'] in ['上映时间_@value','上映时间_inArea','饰演_@value','饰演_inWork','获奖_period','获奖_@value','获奖_inWork','获奖_onDate','配音_@value','配音_inWork','票房_@value','票房_inArea']:                                        
+                    predicate = cur_dict['predicate']
+                    left,right = tuple(predicate.split("_")) # 拿到左右两个
+                    val_1[right] = obj
+                    cur_dict['predicate'] = left
+                else:
+                    val_1['@value'] = obj
+                 
+                cur_dict['object'] = val_1                
+                cur_dict['subject'] = subject                    
+                #print(cur_res)
+                cnt += 1
+                spo_list.append(cur_dict)                
+            cur_index += 1
+        
+        # 合并复杂结构
+        combine_res = {} # 最后的结果
+        for spo in spo_list:
+            predicate = spo['predicate']
+            subject = spo['subject']
+            obj_key = spo['object'].keys()
+            obj_val = spo['object'].values()
+            if subject+"_"+predicate not in combine_res.keys():        
+                combine_res[subject+"_"+predicate]=[]
+                combine_res[subject+"_"+predicate].append(spo['object'])
+            else:
+                combine_res[subject+"_"+predicate].append(spo['object'])        
+
+        
+        temp = []
+        for item in combine_res.items():
+            key ,value = item
+            cur_temp = {}
+            subject,predicate = key.split("_")
+            cur_temp['subject'] = subject
+            cur_temp['predicate'] = predicate
+            if len(value) > 1:
+                cur_temp['object'] = {} # 空字典
+                for val in value:
+                    cur_temp['object'].update(val)
+                    #{'onDate': '2001年'}, {'@value': '中国原创音乐榜千禧全国成就大奖'}
+            else:
+                cur_temp['object'] = value[0]
+            temp.append(cur_temp)
+        cur_res["spo_list"]= temp
+        batch_res.append(cur_res)
+    return batch_res
+
+
+
+
+
+"""
 去除字符串中的数字，如果有连续的数字仅保留一个。这个函数作废，没用到。
 """
 def get_rid_of_number_in_str(string):
@@ -695,21 +855,33 @@ def get_rid_of_number_in_str(string):
 
 """后处理部分
 功能：添加书名号中的内容
+
+特殊样例：《库洛洛版《一个陌生女人的来信》》
 """
 def addBookName(text):
     target = [] 
     cur_text = ""
-    flag = 0
+    flag = 0 # 是否在书名号中
+    pre_flag = 1
     for char in text:
-        if flag == 1 and char!='\n' and char!='》':
-            cur_text+=char
-        if char == "《":
-            flag = 1
-        elif char =="》":
-            cur_text = cur_text.strip() # 去掉空格
+        if flag == 1 and char!='\n' :
+            if char!="》":
+                cur_text+=char
+            if char == "》" and not pre_flag:
+                cur_text +=char
+
+        if char == "《" and flag == 0: # 第一次碰到 《
+            flag = 1        
+        elif char =="》" and pre_flag and flag:
+            cur_text = cur_text.strip("\n") # 去掉换行
+            cur_text = cur_text.strip("") # 去掉空格
             target.append(cur_text)
             cur_text = ""
             flag = 0
+        elif flag == 1 and char == "《":
+            pre_flag = 0 # 说明中间还有一个 《
+        elif flag ==1 and char == "》" and pre_flag == 0:
+            pre_flag = 1
     return target
 
 
@@ -729,7 +901,25 @@ def is_year_month_day(subject):
 """
 可视化subject的预测
 """
-def visualize_subject(file_path,all_subjects,all_subject_labels):
+def visualize_subject(file_path,all_subjects):
+    with open(file_path,'w') as f:
+        for batch_subjects in all_subjects:
+            for subjects in batch_subjects:                                
+                if len(subjects) == 0:
+                    f.write("None"+"\n")
+                else:
+                    for subject in subjects:  
+                        if subject == "库洛洛版《一个陌生女人的来信":
+                            print("xx")
+                        f.write(subject +"\n")                    
+                f.write("\n")
+
+
+
+"""
+可视化subject的预测
+"""
+def visualize_subject_label(file_path,all_subjects,all_subject_labels):
     with open(file_path,'w') as f:
         for item_1 in zip(all_subjects,all_subject_labels):
             batch_subjects,batch_subject_labels = item_1
@@ -741,8 +931,9 @@ def visualize_subject(file_path,all_subjects,all_subject_labels):
                     for lines in zip(subjects,labels):
                         subject,label = lines
                         f.write(subject +"\t" +label+"\n")                
+                
+                # 下面这行代码无论是if,else 都得执行
                 f.write("\n")
-
 
 """
 可视化subject 和 object 的预测结果
@@ -774,5 +965,8 @@ def visualize_subject_object(file_path,batch_subjects,batch_objects,batch_origin
 
 
 if __name__ == "__main__":
-    get_precision_recall_f1(golden_file="./data/dev_data.json",
-                            predict_file="./data/predictions.json.zip")
+    #get_precision_recall_f1(golden_file="./data/dev_data.json",
+     #                       predict_file="./data/predictions.json.zip")
+    text = "库洛洛版《一个陌生女人的来信》,《步步惊心》是lotus丝莲创作的网络小说，发表于晋江文学网"
+    target = addBookName(text)
+    print(target)
