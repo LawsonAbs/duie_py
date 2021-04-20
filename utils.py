@@ -764,7 +764,7 @@ def post_process_2(batch_subjects,
         cur_res['text'] = origin_info['text']
         spo_list = [] # 是一个列表
         if len(subjects)==0: # 如果subjects 的结果为空
-            # cnt += len(batch_objects[cur_index]) # 因为subjects 为空时，是没有训练数据的
+            
             cur_index += 1
             continue
         # step2. 从某条样本中取出所有的 subjects 以及其标签
@@ -813,19 +813,27 @@ def post_process_2(batch_subjects,
         
         temp = []
         for item in combine_res.items():
-            key ,value = item
-            cur_temp = {}
-            subject,predicate = key.split("_")
-            cur_temp['subject'] = subject
-            cur_temp['predicate'] = predicate
-            if len(value) > 1:
+            key ,value = item            
+            line = key.split("_")
+            predicate = line[-1]
+            subject = "_".join(line[0:-1])
+            if predicate in ['上映时间','饰演','获奖','配音','票房']: # 
+                cur_temp = {}
                 cur_temp['object'] = {} # 空字典
+                cur_temp['subject'] = subject
+                cur_temp['predicate'] = predicate
                 for val in value:
                     cur_temp['object'].update(val)
                     #{'onDate': '2001年'}, {'@value': '中国原创音乐榜千禧全国成就大奖'}
-            else:
-                cur_temp['object'] = value[0]
-            temp.append(cur_temp)
+                temp.append(cur_temp)
+            else:                
+                for val in value:
+                    cur_temp = {}
+                    cur_temp['subject'] = subject
+                    cur_temp['predicate'] = predicate
+                    cur_temp['object'] = {}
+                    cur_temp['object'].update(val)
+                    temp.append(cur_temp)            
         cur_res["spo_list"]= temp
         batch_res.append(cur_res)
     return batch_res
