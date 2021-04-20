@@ -213,6 +213,7 @@ def calc_pr(predict_filename, alias_filename, golden_filename):
     """calculate precision, recall, f1"""
     ret_info = {}
     all_detail_info = {} # 所有的评测，便于最后可视化找出错误，遗漏的点
+    forget_spo_map = {}  # 遗漏数据的类型统计
     #load alias dict
     ret_code, alias_dict = load_alias_dict(alias_filename)
     if ret_code != SUCCESS:
@@ -247,7 +248,7 @@ def calc_pr(predict_filename, alias_filename, golden_filename):
         correct_spo = [] # 预测正确的项
         forget_spo = [] # 预测和golden 相比，预测中遗漏的项
         redundant_spo = [] # 预测和golden相比，多余的项
-
+        
         # 理论上说，precision 和 recall 的分子都是同一个值。但是因为这里为了避免重复计算，
         # 所以需要分开用两个for循环计算        
         for spo in normalized_predict_spo:
@@ -263,12 +264,17 @@ def calc_pr(predict_filename, alias_filename, golden_filename):
                 recall_correct_sum += 1 # 召回中正确的项数
             else:
                 forget_spo.append(golden_spo)
+                if golden_spo['predicate'] not in forget_spo_map.keys():
+                    forget_spo_map[golden_spo['predicate']] = 1
+                else:
+                    forget_spo_map[golden_spo['predicate']] = forget_spo_map[golden_spo['predicate']] + 1
         
         # 放入到一起
         all_detail_info[sent].append(correct_spo)
         all_detail_info[sent].append(redundant_spo)        
         all_detail_info[sent].append(forget_spo) # 
 
+    forget_spo_map = sorted(forget_spo_map.items(),key = lambda x:x[1],reverse= True)
     # 将最后的结果写入文件中
     dir_name = os.path.dirname(predict_filename)
     all_info_path = dir_name + "/all_info.txt"
@@ -289,8 +295,11 @@ def calc_pr(predict_filename, alias_filename, golden_filename):
                     f.write(str(item) + "\n")
                 f.write(']\n')
             f.write("\n")
-            
-
+        
+        # 写出最后的统计信息
+        for item in forget_spo_map:
+            f.write(str(item)+"\n")
+        f.write("\n")
     sys.stderr.write('correct spo num = {}\n'.format(correct_sum))
     sys.stderr.write('submitted spo num = {}\n'.format(predict_sum))
     sys.stderr.write('golden set spo num = {}\n'.format(recall_sum))
