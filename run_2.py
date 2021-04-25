@@ -112,7 +112,7 @@ def set_random_seed(seed):
 
 import time
 curTime = time.strftime("%m%d_%H%M%S", time.localtime())
-log_name = "predict" + curTime + '.log'
+log_name = "object_" + curTime + '_.log'
 logging.basicConfig(format='%(asctime)s - %(levelname)s -%(name)s - %(message)s',
                     datefmt='%m/%d%/%Y %H:%M:%S',
                     level=logging.INFO,
@@ -246,9 +246,6 @@ def do_train():
         step = 1   
         for batch in tqdm(train_data_loader):
             input_ids,token_type_ids,attention_mask, batch_origin_info,labels, batch_offset_mapping = batch
-            
-            # 可以把上面这些数据从cuda中移出
-
 
             # ====== 根据origin_info 得到 subtask 2 的训练数据 ==========
             # 这里的object_input_ids 的size 不再是args.batch_size ，可能比这个稍大
@@ -288,7 +285,7 @@ def do_train():
                 t.save(model_object.state_dict(),
                             os.path.join(args.output_dir,"model_object_%d_bert.pdparams" % global_step))
             step+=1 
-            global_step += 1            
+            global_step += 1 
             viz_object.line([loss_item], [global_step], win=win, update="append")
         t.save(model_object.state_dict(),os.path.join(args.output_dir,
                             "model_object_%d_bert.pdparams" % global_step))
