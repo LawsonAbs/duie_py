@@ -2,8 +2,9 @@ log/*
 data/*
 model_object/
 model_subject/
-model_relation/
+relation_model/
 ./checkpoints
 ./chechpoints_bp
+._/checkpoints*
 __pycache__/
 ./vscode
