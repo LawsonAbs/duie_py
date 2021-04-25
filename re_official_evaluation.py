@@ -277,7 +277,9 @@ def calc_pr(predict_filename, alias_filename, golden_filename):
     forget_spo_map = sorted(forget_spo_map.items(),key = lambda x:x[1],reverse= True)
     # 将最后的结果写入文件中
     dir_name = os.path.dirname(predict_filename)
-    all_info_path = dir_name + "/all_info.txt"
+    temp = predict_filename.split("/")[-1]
+    temp = temp.split(".")[0]
+    all_info_path = dir_name + "/"+temp+"_all_info.txt"
     
     # 如果存在这个文件，则删除
     if os.path.exists(all_info_path):
