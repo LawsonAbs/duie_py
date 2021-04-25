@@ -124,7 +124,7 @@ def analysis_relation(relation_pred_file):
 """
 功能：分析subject 在文本中的位置信息
 """
-def analysis_location(file_path):
+def analysis_subject_location(file_path):
     location_map = {}
     with open(file_path,'r') as f:
         line = f.readline()
@@ -179,11 +179,40 @@ def analysis_text_length(file_path):
             f.write(text+"\n")
 
 
+def analysis_object():
+    train_data_path = '/home/lawson/program/DuIE_py/data/train_data.json'
+    all_objs = []
+    obj_cls_count = {}
+    with open(train_data_path,"r") as f:
+        line = f.readline()
+        while(line):
+            line = json.loads(line)
+            cur_objects =  []
+            text = line['text']
+            cur_len = len(text)
+            spo_list = line['spo_list']
+            for spo in spo_list:     
+                cur_objects = spo['object'].values()
+                obj_type = spo['object_type'].values()
+                for type in obj_type:
+                    if type not in obj_cls_count.keys():
+                        obj_cls_count[type] = 1
+                    else:
+                        obj_cls_count[type] = obj_cls_count[type] + 1 
+            all_objs.append(cur_objects)
+            line = f.readline()
+    
+    # 对所有的类型进行一个排序
+    res = sorted(obj_cls_count.items(),key = lambda x:x[1])
+    for i in res:
+        print(i)
+
 if __name__ == "__main__":
     # get_subject_class_num(
     #     train_data_path='./data/dev_data.json'
     # )
-    look_error()
+    #look_error()
     #analysis_relation(relation_pred_file="/home/lawson/program/DuIE_py/data/predict/relation/relation_predict_513882_roberta.txt")
     #analysis_location(file_path='./data/train_data.json')
     #analysis_text_length(file_path='./data/dev_data.json')
+    analysis_object()
