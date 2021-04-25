@@ -359,7 +359,7 @@ def do_train_2(model_subject_path,model_object_path,model_relation_path):
     win = "train_loss_negative_2"  
     res = [] # 最后的预测结果
     subject_invalid_num = 0 # 预测失败的个数
-    all_known_subjects = get_all_subjects(all_subject_path=None,train_data_path="/home/lawson/program/DuIE_py/data/train_data.json")
+    all_known_subjects = get_all_subjects(train_data_path="/home/lawson/program/DuIE_py/data/train_data.json")
     # 将二者模型的梯度关闭
     for param in model_subject.parameters():
         param.requires_grad = False
@@ -374,7 +374,7 @@ def do_train_2(model_subject_path,model_object_path,model_relation_path):
 
     # Starts training.
     global_step = 0
-    logging_steps = 100
+    logging_steps = 50
     save_steps = 5000
     step = 1
     logging_loss = 0
@@ -398,7 +398,8 @@ def do_train_2(model_subject_path,model_object_path,model_relation_path):
             input_ids,
             tokenizer,
             batch_origin_info,
-            offset_mapping
+            offset_mapping,
+            all_known_subjects
             )
             
             # 添加一个后处理 => 将所有的书名号中的内容都作为 subject 
