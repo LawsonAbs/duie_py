@@ -1,3 +1,4 @@
+import os
 import json
 """
 用于分析数据的包
@@ -30,9 +31,9 @@ def get_subject_class_num(train_data_path):
 找出预测结果中 object 不包含@value的部分
 """
 def look_error():
-    data_path = "/home/lawson/program/DuIE_py/data/test_data_predict.json"
+    data_path = "/home/lawson/program/DuIE_py/data/test_data_predict_001.json"
     valid = []
-    out_path = "/home/lawson/program/DuIE_py/data/test_data_predict_valid.json"
+    out_path = data_path + "_valid.json"
     cnt = 0
     with open(data_path,'r') as f:
         line = f.readline()        
@@ -63,27 +64,6 @@ def look_error():
             f.write("\n")
             # f.(str(line)+"\n")
     
-
-def look_error_2():
-    data_path = "/home/lawson/program/DuIE_py/data/test_data_predict.json"
-    valid = []
-    out_path = "/home/lawson/program/DuIE_py/data/test_data_predict_valid.json"
-    cnt = 0
-    with open(data_path,'r') as f:
-        line = f.readline()        
-        while(line):
-            line = line.strip("\n")
-            #line = "{" + line
-            line += "}"
-            line = json.loads(line) # 变成一个json数据            
-            valid.append(line)
-            line = f.readline()
-
-    with open(out_path,'w') as f:
-        for line in valid:
-            json.dump(line,f,ensure_ascii=False)
-            f.write("\n")
-            # f.(str(line)+"\n")
 
 """
 删除掉 "predicate": "获奖" 的内容
@@ -168,10 +148,42 @@ def analysis_location(file_path):
     for item in res:
         print(item)
 
+
+# 分析各个文本的长度
+def analysis_text_length(file_path):
+    len_map = {}
+    long_len_text_file = "./long_text.txt"
+    long_len_text = []
+    with open(file_path,'r') as f:
+        line = f.readline()
+        while(line):
+            line = json.loads(line)            
+            text = line['text']
+            cur_len = len(text)
+            if cur_len not in len_map.keys():
+                len_map[cur_len] = 1
+            else:
+                len_map[cur_len] += 1
+            if cur_len > 200:
+                long_len_text.append(text)
+                #print(text+"\n")
+            line = f.readline()
+    res = sorted(len_map.items(),key = lambda x:x[0],reverse=True)
+    for i in res:
+        print(i)
+
+    if os.path.exists(long_len_text_file):
+        os.remove(long_len_text_file)
+    with open(long_len_text_file,'w') as f:
+        for text in long_len_text:
+            f.write(text+"\n")
+
+
 if __name__ == "__main__":
     # get_subject_class_num(
     #     train_data_path='./data/dev_data.json'
     # )
-    #look_error()
+    look_error()
     #analysis_relation(relation_pred_file="/home/lawson/program/DuIE_py/data/predict/relation/relation_predict_513882_roberta.txt")
-    analysis_location(file_path='./data/train_data.json')
+    #analysis_location(file_path='./data/train_data.json')
+    #analysis_text_length(file_path='./data/dev_data.json')
