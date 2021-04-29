@@ -12,7 +12,7 @@ import zipfile
 import re
 from tqdm import tqdm
 import sys
-from metric import cal_subject_metric
+from metric import cal_subject_metric, cal_subject_object_metric
 
 import numpy as np
 import torch as t
@@ -25,7 +25,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from transformers import BertTokenizerFast, BertForSequenceClassification
 
 from data_loader import PredictSubjectDataset,PredictSubjectDataCollator, from_dict2object,get_negative_relation_data
-from utils import decode_subject,decode_object, decoding,  find_entity, get_precision_recall_f1, visualize_subject_object, write_prediction_results
+from utils import  add_relation_of_country, decode_subject,decode_object, decoding,  find_entity, get_all_country, get_all_subjects, get_precision_recall_f1, post_process_2, visualize_subject_object, write_prediction_results
 from utils import decode_relation_class,post_process,addBookName,visualize_subject
 from data_loader import from_dict2object,from_dict2_relation
 
@@ -109,7 +109,7 @@ with open(id2object_map_path, 'r', encoding='utf8') as fp:
 
 
 # Reads label_map.
-id2relation_map_path = os.path.join(args.data_path, "id2relation.json")
+id2relation_map_path = os.path.join(args.data_path, "id2predicate.json")
 if not (os.path.exists(id2relation_map_path) and os.path.isfile(id2relation_map_path)):
     sys.exit("{} dose not exists or is not a file.".format(id2relation_map_path))
 with open(id2relation_map_path, 'r', encoding='utf8') as fp:
@@ -187,7 +187,7 @@ def predict_subject(model_subject_path,out_file_path):
                 target = addBookName(origin_info['text'])
                 subjects.extend(target)
                 labels.extend(["后处理"] * len(target))
-            
+
             all_subjects.append(batch_subjects)
             all_subject_labels.append(batch_subject_labels)
             # 需要判断 batch_subjects 是空的情况，最好能够和普通subjects 一样处理        
@@ -202,14 +202,13 @@ def predict_subject(model_subject_path,out_file_path):
 
 """
 在subject的基础上预测object
-
 """
 def predict_subject_object(model_subject_path,model_object_path):
     # Does predictions.
     print("\n====================start predicting / evaluating ====================")
     #name_or_path = "/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch"
     subject_name_or_path = "/home/lawson/pretrain/bert-base-chinese"
-    model_subject = SubjectModel(subject_name_or_path,768,out_fea=subject_class_num-1)
+    model_subject = SubjectModel(subject_name_or_path,768,out_fea=subject_class_num)
     model_subject.load_state_dict(t.load(model_subject_path))
     model_subject = model_subject.cuda()
 
@@ -236,10 +235,12 @@ def predict_subject_object(model_subject_path,model_object_path):
         )
 
     model_subject.eval()
-    
+    model_object.eval()
+    all_known_subjects = get_all_subjects("/home/lawson/program/DuIE_py/data/train_data.json")
     res = [] # 最后的预测结果
     subject_invalid_num = 0 # 预测失败的个数
-    subject_object_predict_file = "./subject_object_predict.txt"
+    temp = (args.dev_data_path).split("/")[-1].split('.')[0]
+    subject_object_predict_file =  f"./{temp}_subject_object_predict.txt"
     if os.path.exists(subject_object_predict_file):
         os.remove(subject_object_predict_file)
     with t.no_grad():        
@@ -260,27 +261,12 @@ def predict_subject_object(model_subject_path,model_object_path):
             input_ids,
             tokenizer,
             batch_origin_info,
-            offset_mapping
-            )
+            offset_mapping,
+            all_known_subjects
+            )            
+                        
             
-            # 添加一个后处理 => 将所有的书名号中的内容都作为 subject 
-            for item in zip(batch_origin_info,batch_subjects,batch_subject_labels):
-                origin_info,subjects,labels = item
-                target = addBookName(origin_info['text'])
-                for word in target:
-                    if word not in subjects:
-                        subjects.append(word)      
-                        labels.append("后处理")
-            
-            # 将subjects 中的元素去重                  
-            # 需要判断 batch_subjects 是空的情况，最好能够和普通subjects 一样处理        
-            if(len(batch_subjects[0]) == 0):
-                #print("----- 未预测到subject ----------")
-                subject_invalid_num+=1
-                continue
-
-            
-            print("\n====================start predicting object ====================")                    
+            logger.info("\n====================start predicting object ====================")                    
             # 将subject的预测结果写到文件中                        
             object_invalid_num = 0 
             # ====== 根据origin_info 得到 subtask 2 的训练数据 ==========
@@ -309,8 +295,12 @@ def predict_subject_object(model_subject_path,model_object_path):
             )
 
             # 可视化subject + object 的预测结果
-            visualize_subject_object(subject_object_predict_file,batch_subjects,batch_objects,batch_origin_info)            
-            
+            visualize_subject_object(subject_object_predict_file,batch_subjects,batch_objects)            
+    
+    #评测
+    cal_subject_object_metric(subject_object_predict_file,args.dev_data_path)
+    
+    
 
 """
 使用训练好的模型，进行预测。
@@ -321,9 +311,12 @@ def predict_subject_object(model_subject_path,model_object_path):
 def do_predict(model_subject_path,model_object_path,model_relation_path):
     # Does predictions.
     logger.info("\n====================start predicting====================")
+    logger.info("\n===============本次运行，参数配置如下：================")
+    for k,v in (vars(args).items()):
+        logger.info(f"{k,v}")
     bert_name_or_path = "/home/lawson/pretrain/bert-base-chinese"
     roberta_name_or_path = "/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch"    
-    model_subject = SubjectModel(bert_name_or_path,768,out_fea=subject_class_num-1)
+    model_subject = SubjectModel(bert_name_or_path,768,out_fea=subject_class_num)
     #model_subject = SubjectModel(roberta_name_or_path,768,out_fea=subject_class_num)
     model_subject.load_state_dict(t.load(model_subject_path))
     model_subject = model_subject.cuda()    
@@ -338,8 +331,17 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
 
     tokenizer = BertTokenizerFast.from_pretrained("/home/lawson/pretrain/bert-base-chinese")
     #predict_file_path = os.path.join(args.data_path, 'train_data_2_predict.json') 
-    predict_file_path = os.path.join(args.data_path, 'dev_data_predict.json') 
+    
+    #subject_name = model_subject_path.    
+    
+    dev_data_path = (args.dev_data_path).split("/")[-1].split(".")[0]
+    
+    a = (args.model_relation_path).split("/")
+    a = "_".join(a[-2::])
+    a = a.split(".")[0]
 
+    predict_file_path = os.path.join(args.data_path, dev_data_path)+f"_predict_{a}.json"
+    batch_file_path = f"/home/lawson/program/DuIE_py/data/{dev_data_path}_subject_object_relation_{a}.txt"
     # Loads dataset.
     dev_dataset = PredictSubjectDataset.from_file(
         #os.path.join(args.data_path, 'train_data_2.json'),
@@ -359,11 +361,14 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
     model_subject.eval()
     model_object.eval()
     model_relation.eval()
+
+    all_known_subjects = get_all_subjects(train_data_path="/home/lawson/program/DuIE_py/data/train_data.json")
     # 将subject的预测结果写到文件中
-    file_path = "/home/lawson/program/DuIE_py/data/subject_predict.txt"
-    batch_file_path = "/home/lawson/program/DuIE_py/data/subject_object_relation.txt" 
+    all_country = get_all_country(train_data_path="/home/lawson/program/DuIE_py/data/train_data.json")
     if os.path.exists(batch_file_path):
-        os.remove(batch_file_path)
+        logger.info("存在文件subject_object_relation.txt，请处理")
+        sys.exit(0)
+        
     res = [] # 最后的预测结果
     invalid_num = 0 # 预测失败的个数
     with t.no_grad():
@@ -384,20 +389,10 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
             input_ids,
             tokenizer,
             batch_origin_info,
-            offset_mapping
+            offset_mapping,
+            all_known_subjects
             )
-            
-            # 添加一个后处理 => 将所有的书名号中的内容都作为 subject 
-            for item in zip(batch_origin_info,batch_subjects,batch_subject_labels):
-                origin_info,subjects,labels = item
-                target = addBookName(origin_info['text'])
-                for word in target:
-                    if word not in subjects:
-                        subjects.append(word)      
-                        labels.append("后处理")            
-
-            
-            logger.info("\n====================start predicting object ====================")                    
+                        
             # 将subject的预测结果写到文件中                        
             object_invalid_num = 0 
             # ====== 根据origin_info 得到 subtask 2 的训练数据 ==========
@@ -455,11 +450,12 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
 
             batch_relations = decode_relation_class(logits,id2relation_map)
 
+            # batch_relations = add_relation_of_country(batch_subjects,batch_subject_labels,
+            # batch_objects,batch_object_labels,batch_relations,batch_origin_info)
+
             # 得到最后的结果
-            cur_res = post_process(batch_subjects, # 5
-                        batch_subject_labels, # 5
-                        batch_objects, # 5
-                        batch_object_labels,# 5
+            cur_res = post_process_2(batch_subjects, # 5                        
+                        batch_objects, # 5                        
                         batch_relations,
                         batch_origin_info
             )
