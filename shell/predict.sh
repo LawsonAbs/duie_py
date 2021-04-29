@@ -1,9 +1,11 @@
-
 CUDA_VISIBLE_DEVICES=0 python /home/lawson/program/DuIE_py/predict.py \
                         --do_predict  \
                         --n_gpu 1  \
                         --seed 42  \
-                        --data_path \
-                        /home/lawson/program/DuIE_py/data \
+                        --data_path /home/lawson/program/DuIE_py/data \
+                        --dev_data_path /home/lawson/program/DuIE_py/data/dev_data_1000.json \
                         --max_seq_length 128 \
-                        --batch_size 64 \
+                        --batch_size 1 \
+                        --model_subject_path /home/lawson/program/DuIE_py/model_subject/model_subject_64236_bert.pdparams \
+                        --model_object_path /home/lawson/program/DuIE_py/model_object/model_object_556706_bert.pdparams \
+                        --model_relation_path  /home/lawson/program/DuIE_py/checkpoints_20210418/model_relation_684756_roberta_epoch.pdparams

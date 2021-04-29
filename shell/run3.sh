@@ -1,1 +1,12 @@
-CUDA_VISIBLE_DEVICES=1 python run_3.py --do_train --data_path ./data --max_seq_length 128 --batch_size 8 --num_train_epochs 12 --output_dir ./checkpoints
+CUDA_VISIBLE_DEVICES=0 python /home/lawson/program/DuIE_py/run_3.py \
+                    --do_train \
+                    --data_path /home/lawson/program/DuIE_py/data \
+                    --max_seq_length 128 \
+                    --batch_size 4 \
+                    --num_train_epochs 4 \
+                    --output_dir /home/lawson/program/DuIE_py/checkpoints \
+                    --train_data_path /home/lawson/program/DuIE_py/data/train_data.json \
+                    --dev_data_path /home/lawson/program/DuIE_py/data/dev_data_100.json \
+                    --model_relation_path /home/lawson/program/DuIE_py/checkpoints_20210417/model_relation_513882_roberta.pdparams \
+                    --model_subject_path /home/lawson/program/DuIE_py/model_subject/model_subject_64236_bert.pdparams \
+                    --model_object_path /home/lawson/program/DuIE_py/model_object/model_object_556706_bert.pdparams

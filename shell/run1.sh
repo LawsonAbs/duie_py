@@ -1,12 +1,12 @@
-CUDA_VISIBLE_DEVICES=1 python  /home/lawson/program/DuIE_py/run_1.py \
+CUDA_VISIBLE_DEVICES=0 python  /home/lawson/program/DuIE_py/run_1.py \
                         --do_train \
                         --n_gpu 1 \
-                         --seed 42 \
-                         --data_path /home/lawson/program/DuIE_py/data \
-                         --max_seq_length 128 \
-                         --batch_size 32 \
-                         --num_train_epochs 12 \
-                         --learning_rate 1e-3 \
-                         --warmup_ratio 0.06 \
-                         --weight_decay 1e-2 \
-                         --output_dir /home/lawson/program/DuIE_py/checkpoints
+                        --seed 42 \
+                        --data_path /home/lawson/program/DuIE_py/data \
+                        --max_seq_length 128 \
+                        --batch_size 16 \
+                        --num_train_epochs 10 \
+                        --output_dir /home/lawson/program/DuIE_py/checkpoints \
+                        --train_data_path /home/lawson/program/DuIE_py/data/train_data.json \
+                        --dev_data_path /home/lawson/program/DuIE_py/data/dev_data.json \
+                        --init_checkpoint /home/lawson/program/DuIE_py/checkpoints/model_subject_53530_bert_f1=0.787523.pdparams
