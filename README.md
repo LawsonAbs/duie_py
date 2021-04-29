@@ -1,1 +1,1 @@
-# 基于paddleNLP的baseline，本文使用pytorch实现
+# 基于pipeline方式，实现2020年的信息抽取的冠军方案，基于pytorch实现
