@@ -5,44 +5,75 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "duie_train",
+            "name": "run_1",
             "type": "python",
             "request": "launch",
-            "program": "run_duie.py",
+            "program": "run_1.py",
             "console": "integratedTerminal",
-            "env": {"CUDA_VISIBLE_DEVICES":"0"},
-            "args": ["--do_train",
+            "env": {"CUDA_VISIBLE_DEVICES":"1"},
+            "args": [
+                //"--do_train",
+                "--do_eval",
                 "--n_gpu", "1",
                 "--seed", "42",       
                 "--data_path","./data",
-                "--max_seq_length", "128",
+                "--max_seq_length", "256",
                 "--batch_size", "1",
-                "--num_train_epochs","12",
-                "--learning_rate","1e-3",
-                "--warmup_ratio", "0.06",
-                "--weight_decay","1e-2",
-                //"--init_checkpoint","./checkpoints/model_40000.pdparams",
-                "--output_dir", "./checkpoints"]
-        },
+                "--num_train_epochs","10",
+                // "--learning_rate","1e-3",
+                // "--warmup_ratio", "0.06",
+                // "--weight_decay","1e-2",
+                "--init_checkpoint", "/home/lawson/program/DuIE_py/model_subject/model_subject_64236_bert.pdparams",                "--train_data_path", "/home/lawson/program/DuIE_py/data/train_data_1000.json",
+                "--dev_data_path", "/home/lawson/program/DuIE_py/data/dev_data_100.json",
+                "--output_dir", "./checkpoints"
+            ]
+        },        
         {
             "name": "run_2",
             "type": "python",
             "request": "launch",
             "program": "run_2.py",
             "console": "integratedTerminal",
-            "env": {"CUDA_VISIBLE_DEVICES":"0"},
-            "args": ["--do_train",
+            "env": {"CUDA_VISIBLE_DEVICES":"1"},
+            "args": [
+                //"--do_train",
+                "--do_eval",
                 "--n_gpu", "1",
                 "--seed", "42",       
                 "--data_path","./data",
                 "--max_seq_length", "128",
                 "--batch_size", "4",
-                "--num_train_epochs","12",
-                // "--learning_rate","1e-3",
-                // "--warmup_ratio", "0.06",
-                // "--weight_decay","1e-2",
-                //"--init_checkpoint","./checkpoints/model_40000.pdparams",
-                "--output_dir", "./checkpoints"]
+                "--eval_batch_size", "1", //这里仅仅支持batch_size 为1
+                "--num_train_epochs","12",            
+                "--init_checkpoint","/home/lawson/program/DuIE_py/model_object/model_object_556706_bert.pdparams",
+                "--output_dir", "/home/lawson/program/DuIE_py/checkpoints",
+                "--train_data_path","/home/lawson/program/DuIE_py/data/train_data_1000.json",
+                "--dev_data_path","/home/lawson/program/DuIE_py/data/dev_data_100.json"
+            ]
+        },
+        {
+            "name": "run_3",
+            "type": "python",
+            "request": "launch",
+            "program": "run_3.py",
+            "console": "integratedTerminal",
+            "env": {"CUDA_VISIBLE_DEVICES":"0"},
+            "args": [
+                    "--do_train",
+                    //"--do_eval",
+                    "--n_gpu", "1",
+                    "--seed", "42",       
+                    "--data_path","./data",
+                    "--train_data_path", "/home/lawson/program/DuIE_py/data/train_data_100.json",
+                    "--dev_data_path", "/home/lawson/program/DuIE_py/data/dev_data_10.json",
+                    "--max_seq_length", "128",
+                    "--batch_size", "2",
+                    "--num_train_epochs","5", // 如果是在负样本上，就跑2个epoch
+                    "--output_dir", "./checkpoints",
+                    "--model_subject_path","/home/lawson/program/DuIE_py/model_subject/model_subject_64236_bert.pdparams",
+                    "--model_object_path","/home/lawson/program/DuIE_py/model_object/model_object_556706_bert.pdparams",
+                    "--model_relation_path","/home/lawson/program/DuIE_py/checkpoints_20210417/model_relation_513882_roberta.pdparams"
+                ]
         },
         {
             "name": "predict",
@@ -50,15 +81,20 @@
             "request": "launch",
             "program": "predict.py",
             "console": "integratedTerminal",
-            "env": {"CUDA_VISIBLE_DEVICES":"0"},
-            "args": ["--do_predict",
+            "env": {"CUDA_VISIBLE_DEVICES":"1"},
+            "args": [
+                "--do_predict",
                 "--n_gpu", "1",
-                "--seed", "42",       
-                "--data_path","./data",
-                "--max_seq_length", "128",
-                "--batch_size", "1",                 
-                //"--init_checkpoint","./checkpoints/model_40000.pdparams",
-                "--output_dir", "./checkpoints"]
+                "--seed", "42",                
+                "--max_seq_length", "256",
+                "--batch_size", "1",
+                "--output_dir", "./checkpoints",
+                "--model_subject_path","/home/lawson/program/DuIE_py/model_subject/model_subject_64236_bert.pdparams",
+                "--model_object_path","/home/lawson/program/DuIE_py/model_object/model_object_556706_bert.pdparams",
+                "--model_relation_path","/home/lawson/program/DuIE_py/checkpoints_20210418/model_relation_770193_roberta_epoch.pdparams",
+                "--data_path", "/home/lawson/program/DuIE_py/data",
+                "--dev_data_path", "/home/lawson/program/DuIE_py/data/dev_data_100.json"
+            ]
         },
         {
             "name": "data_loader",
@@ -80,20 +116,30 @@
             "request": "launch",
             "program": "re_official_evaluation.py",
             "console": "integratedTerminal",
-            "args": ["--golden_file","./data/dev_data.json",
-                    "--predict_file","./data/predict_eval.json.zip"]
+            "args": ["--golden_file","./data/dev_data_1000.json",
+                    "--predict_file","./data/dev_data_1000_predict_xxx.json.zip"
+                ]
         },
         {
-            "name": "duie_predict",
+            "name": "metric",
             "type": "python",
             "request": "launch",
-            "program": "run_duie.py",
-            "console": "integratedTerminal",
-            "args": ["--do_predict",                                
-                "--predict_data_file","./data/dev_data_200.json",
-                "--max_seq_length", "128",
-                "--batch_size", "1",
-            ]
+            "program": "metric.py",
+            "console": "integratedTerminal"            
+        },
+        {
+            "name": "analysis",
+            "type": "python",
+            "request": "launch",
+            "program": "data_analysis.py",
+            "console": "integratedTerminal"            
+        },
+        {
+            "name": "preprocess_data",
+            "type": "python",
+            "request": "launch",
+            "program": "preprocess_data.py",
+            "console": "integratedTerminal"
         }
     ]
 }
