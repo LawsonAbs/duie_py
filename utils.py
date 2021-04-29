@@ -284,18 +284,21 @@ def decode_subject(logits,id2subject_map,input_ids,tokenizer,batch_origin_info,b
     value,batch_index = c
     # 将index翻转，取翻转后的第二行就是次大的index 
     batch_index = batch_index.transpose(2,1)
+    first_batch_indexs = batch_index[:,0,:]
     second_batch_indexs = batch_index[:,1,:]
     # [batch_size,max_seq_length]
 
     batch_value = value.transpose(2,1)
+    first_batch_values = batch_value[:,0,:]
     second_batch_values = batch_value[:,1,:]
-    threshold = 5
-
+    up_threshold = 7 # 间外
+    down_threshold = 4 # 间内
+    val_threshold = 4 # 单个值也必须满足一定的要求
     # step3.开始解码
     batch_subjects =[]
     batch_labels = []
     i = 0
-    for first_indexs,second_indexs,second_values in zip(first_batch_indexs,second_batch_indexs,second_batch_values): # 找出index 
+    for first_indexs,first_values,second_indexs,second_values in zip(first_batch_indexs,first_batch_values,second_batch_indexs,second_batch_values): # 找出index 
         offset_mapping  = batch_offset_mapping[i] # 拿到当前的offset_mapping
         origin_info = batch_origin_info[i]
         origin_text = origin_info['text']
@@ -316,6 +319,7 @@ def decode_subject(logits,id2subject_map,input_ids,tokenizer,batch_origin_info,b
                     ):
                     cur_subject+=" "
                 cur_subject += origin_text[left:right]
+                
                 #cur_subject += origin_text[i-1] # 因为有的字无法识别，所以这里用origin_text. i-1 是因为 相比而言，origin_text 少了 [CLS]
                 cur_subject_label = id2subject_map[str(ind.item())]
             if ind == 1 and cur_subject!="": # 说明是中间部分，且 cur_subject 不为空
@@ -349,71 +353,124 @@ def decode_subject(logits,id2subject_map,input_ids,tokenizer,batch_origin_info,b
                 subjects.append(word)
                 labels.append("后处理1")
 
-        flag = 1
-        for know in all_known_subjects:
-            cur_len = len(origin_text)
-            if know in origin_text:
-                if ((origin_text.find(know) /cur_len) <0.1 
-                    and know not in subjects                     
-                    ):
-                    for subject in subjects: # 判断是否已经有这个作为开头了，如果有的话，则不在放入
-                        if subject.startswith(know):
-                            flag = 0
-                    if flag:
-                        subjects.append(know)
-                        labels.append('后处理2')
+        # flag = 1
+        # for know in all_known_subjects:
+        #     cur_len = len(origin_text)
+        #     if know in origin_text:
+        #         if ((origin_text.find(know) /cur_len) < 0.1
+        #             and know not in subjects
+        #             ):
+        #             for subject in subjects: # 判断是否已经有这个作为开头了，如果有的话，则不在放入
+        #                 if subject.startswith(know) or (subject.find(know)!=-1):
+        #                     flag = 0
+        #             if flag:
+        #                 subjects.append(know)
+        #                 labels.append('后处理2')
         
-        # 从次大的下标中寻找，此时需要注意其得分情况
-        # cur_subject = ""
-        # k = 0
-        # for ind,val in zip(second_indexs,second_values):
-        #     if ind > 1 and val > threshold: # 说明是一个标签的开始
-        #         offset = offset_mapping[k]
-        #         left,right = tuple(offset)
-        #         # 判断上一个字符是否是字母结束（英文）/数字并且当前的是否不是#开头 => 需要安排一个空格
-        #         if (cur_subject!="" 
-        #             and ( is_english_char(cur_subject[-1]) or ('9'>= cur_subject[-1] and '0'<= cur_subject[-1]))
-        #             and not(tokens[k].startswith("#"))
-        #             and is_english_char(origin_text[left]) # 如果其后也是英文 
-        #             and origin_text[left] != '-' # 不是连字符
-        #             ):
-        #             cur_subject+=" "
-        #         cur_subject += origin_text[left:right]            
-        #         cur_subject_label = id2subject_map[str(ind.item())]
-        #     if ind == 1 and cur_subject!="" and val > threshold: # 说明是中间部分，且 cur_subject 不为空
-        #         offset = offset_mapping[k]
-        #         left,right = tuple(offset)
-        #         if( 
-        #             (is_english_char(cur_subject[-1]) or ('9'>= cur_subject[-1] and '0'<= cur_subject[-1]))
-        #             and not(tokens[k].startswith("#"))
-        #             and is_english_char(origin_text[left]) # 如果其后也是英文
-        #             and origin_text[left] != '-'
-        #             ):
-        #             cur_subject+=" "
-        #         cur_subject += origin_text[left:right]
-            
-        #     # 将 cur_subject 放入到 subjects 中
-        #     # 注意这里放入的条件
-        #     elif val < threshold and cur_subject!="": 
-        #         cur_subject = cur_subject.replace("#","") # 替换掉，因为这会干扰后面的实现
-        #         flag = 1
-        #         for have in subjects: # 判断当前此轮预测的结果是否出现在之前的预测结果中
-        #             if have.startswith(cur_subject):
-        #                 flag = 0
-        #                 break
+        detail_info = [(fi.item(),round(fv.item(),3),si.item(),round(sv.item(),3),t) for fi,fv,si,sv,t in zip(first_indexs,first_values,second_indexs,second_values,tokens)]
 
-        #         # 后处理部分之删除不符合规则的数据
-        #         # 后处理部分之判断subject 的长度：如果长度大于1的才放进去
-        #         if (not is_year_month_day(cur_subject)                     
-        #             and cur_subject_label != 19 # 如果不是第19 类（杂类），那么就放入其中
-        #             and len(cur_subject) > 1
-        #             and flag
-        #             ):
-        #             subjects.append(cur_subject)
-        #             cur_subject_label = "top_2"
-        #             labels.append(cur_subject_label)
-        #         cur_subject = ""
-        #     k+=1
+
+        # 从次大的下标中寻找，此时需要注意其得分情况
+        cur_subject = ""
+        k = 0
+        pre_distance = 0 # 表示的是上一次fi_val 和 se_val 之间的距离差值
+        cur_distance = 0 # 当前两者的差值
+        for fi_ind,fi_val,se_ind,se_val in zip(first_indexs,first_values,second_indexs,second_values):
+            cur_distance = abs(se_val-fi_val)
+
+            # 第一种结束方式——说明是分界点
+            if (abs(cur_distance-pre_distance) > up_threshold 
+                and k # 排除掉CLS向量
+                ): 
+                if cur_subject!="":
+                    cur_subject = cur_subject.replace("#","") # 替换掉，因为这会干扰后面的实现
+                    flag = 1
+                    cur_subject = cur_subject.strip("《》，。+-.:：（）()、/\\！!") # 剃掉两边的所有符号                        
+                    for have in subjects: # 判断当前此轮预测的结果是否出现在之前的预测结果中
+                        if (have.startswith(cur_subject)
+                            or have.find(cur_subject)!=-1 # 如果该串作为子串出现过
+                            ):
+                            flag = 0
+                            break
+                    # 后处理部分之删除不符合规则的数据
+                    # 后处理部分之判断subject 的长度：如果长度大于1的才放进去
+                    if (not is_year_month_day(cur_subject)
+                        and cur_subject_label != 19 # 如果不是第19 类（杂类），那么就放入其中
+                        and len(cur_subject) > 1
+                        and flag
+                        ):                        
+                        subjects.append(cur_subject)
+                        cur_subject_label = "top_2"
+                        labels.append(cur_subject_label)
+                    cur_subject = ""
+                else: # 说明是一个标签的开始
+                    if (fi_ind<=1 # 如果它在top_1 中就已经是标签了，则要过滤
+                        and cur_distance < pre_distance
+                        and se_val > 3
+                        ): 
+                        offset = offset_mapping[k]
+                        left,right = tuple(offset)
+                        # 判断上一个字符是否是字母结束（英文）/数字并且当前的是否不是#开头 => 需要安排一个空格
+                        if (cur_subject!="" 
+                            and ( is_english_char(cur_subject[-1]) or ('9'>= cur_subject[-1] and '0'<= cur_subject[-1]))
+                            and not(tokens[k].startswith("#"))
+                            and is_english_char(origin_text[left]) # 如果其后也是英文 
+                            and origin_text[left] != '-' # 不是连字符
+                            ):
+                            cur_subject+=" "
+                        cur_subject += origin_text[left:right]            
+                        cur_subject_label = id2subject_map[str(se_ind.item())]
+                    else:
+                        cur_subject = ""
+            
+            # 说明是中间部分
+            elif (cur_subject!="" 
+                and abs(cur_distance - pre_distance) < down_threshold                
+                ): 
+                if( se_val > val_threshold# 当前也要过关
+                    and fi_ind <= 1
+                    ): 
+                    offset = offset_mapping[k]
+                    left,right = tuple(offset)
+                    if( 
+                        (is_english_char(cur_subject[-1]) or ('9'>= cur_subject[-1] and '0'<= cur_subject[-1]))
+                        and not(tokens[k].startswith("#"))
+                        and is_english_char(origin_text[left]) # 如果其后也是英文
+                        and origin_text[left] != '-'
+                        ):
+                        cur_subject+=" "
+                    cur_subject += origin_text[left:right]
+                else:
+                    cur_subject = ""
+            
+            # 第二种结束标志
+            # 结束的标志要严格， 所以这里用or，两者
+            elif(abs(cur_distance-pre_distance) > down_threshold  # 超过间内的距离
+                or se_val < val_threshold
+                ): 
+                if cur_subject!="":
+                    cur_subject = cur_subject.replace("#","") # 替换掉，因为这会干扰后面的实现
+                    flag = 1
+                    cur_subject = cur_subject.strip("《》，。+-.:：（）()、/\\！!") # 剃掉两边的所有符号                        
+                    for have in subjects: # 判断当前此轮预测的结果是否出现在之前的预测结果中
+                        if (have.startswith(cur_subject)
+                            or have.find(cur_subject)!=-1 # 如果该串作为子串出现过
+                            ):
+                            flag = 0
+                            break
+                    # 后处理部分之删除不符合规则的数据
+                    # 后处理部分之判断subject 的长度：如果长度大于1的才放进去
+                    if (not is_year_month_day(cur_subject)
+                        and cur_subject_label != 19 # 如果不是第19 类（杂类），那么就放入其中
+                        and len(cur_subject) > 1
+                        and flag
+                        ):                      
+                        subjects.append(cur_subject)
+                        cur_subject_label = "top_2"
+                        labels.append(cur_subject_label)
+                    cur_subject = ""
+            k+=1
+            pre_distance = cur_distance
 
         batch_subjects.append(subjects)
         batch_labels.append(labels)
@@ -724,7 +781,7 @@ params:
 
 01.这些参数都是batch 级别的
 """
-def decode_object(logits,id2object_map,tokenizer,batch_object_input_ids,batch_object_origin_info,batch_object_offset_mapping):
+def decode_object_bp(logits,id2object_map,tokenizer,batch_object_input_ids,batch_object_origin_info,batch_object_offset_mapping):
     m = LogSoftmax(dim=-1)
     a = m(logits)
     batch_indexs = a.argmax(-1) # 在该维度找出值最大的，就是预测出来的标签
@@ -741,7 +798,7 @@ def decode_object(logits,id2object_map,tokenizer,batch_object_input_ids,batch_ob
 
     batch_value = value.transpose(2,1)
     second_batch_values = batch_value[:,1,:]
-    threshold = 2
+    threshold = 10
 
     for item in zip(batch_indexs,batch_object_input_ids,batch_object_offset_mapping,batch_object_origin_info,second_batch_indexs,second_batch_values):
         first_indexs,input_ids,offset , origin_info,second_indexs,second_values = item
@@ -783,7 +840,7 @@ def decode_object(logits,id2object_map,tokenizer,batch_object_input_ids,batch_ob
                     cur_object = ""
         
         
-        # 从次大的下标中寻找，此时只需要注意其得分情况
+        # # 从次大的下标中寻找，此时只需要注意其得分情况
         cur_object = ""
         k = 0
         for ind,val in zip(second_indexs,second_values):
@@ -844,6 +901,212 @@ def decode_object(logits,id2object_map,tokenizer,batch_object_input_ids,batch_ob
 
 
 
+def decode_object(logits,id2object_map,tokenizer,batch_object_input_ids,batch_object_origin_info,batch_object_offset_mapping):
+# step1.对top1 进行解码
+    m = LogSoftmax(dim=-1)
+    a = m(logits)
+    first_batch_indexs = a.argmax(-1) # 在该维度找出值最大的，就是预测出来的标签    
+
+    # step 2.对top2进行解码
+    c = t.topk(logits,k=2,dim=-1) # 直接在logits上取
+    value,batch_index = c
+    # 将index翻转，取翻转后的第二行就是次大的index 
+    batch_index = batch_index.transpose(2,1)
+    first_batch_indexs = batch_index[:,0,:]
+    second_batch_indexs = batch_index[:,1,:]
+    # [batch_size,max_seq_length]
+
+    batch_value = value.transpose(2,1)
+    first_batch_values = batch_value[:,0,:]
+    second_batch_values = batch_value[:,1,:]
+
+    # 对 first_batch_indexs 的值进行一个预处理（矫正），用于找出被漏掉的大概率数据
+    for batch_index,origin in first_batch_indexs,batch_object_origin_info:
+        for i in range(len(batch_index)):
+            fir_val = batch_index[i]
+            if fir_val == 0:
+                # 矫正 1 1 0 1 1 1 0 这种情况
+                if ( (i+2) < len(batch_index) and (i-2) >= 0
+                    and batch_index[i+1] == 1 
+                    and batch_index[i+2] == 1
+                    and batch_index[i-1] == 1
+                    and batch_index[i-2] >= 1
+                    ):
+                    batch_index[i] = 1 
+                    print("修改")
+                    print(origin)
+                # 矫正 0 1 1 1 0 0 这种情况
+                elif ( (i+2) < len(batch_index)
+                    and batch_index[i+1] == 1 
+                    and batch_index[i+2] == 1                    
+                    ):
+                    batch_index[i] = 2 
+                    print("修改")
+                    print(origin)
+    up_threshold = 8 # 间外
+    down_threshold = 4 # 间内
+    val_threshold = 4 # 单个值也必须满足一定的要求
+    # step3.开始解码
+    batch_objects =[]
+    batch_labels = []
+    i = 0
+    for first_indexs,first_values,second_indexs,second_values in zip(first_batch_indexs,first_batch_values,second_batch_indexs,second_batch_values): # 找出index 
+        offset_mapping  = batch_object_offset_mapping[i] # 拿到当前的offset_mapping
+        origin_info = batch_object_origin_info[i]
+        origin_text = origin_info['text']
+        tokens = tokenizer.convert_ids_to_tokens(batch_object_input_ids[i]) # 得到原字符串
+        objects = [] # 预测出最后的结果
+        labels = []
+        cur_object = ""
+        for j,ind in enumerate(first_indexs):
+            if ind > 1 : # 说明是一个标签的开始
+                offset = offset_mapping[j]
+                left,right = tuple(offset)
+                # 判断上一个字符是否是字母结束（英文）/数字并且当前的是否不是#开头 => 需要安排一个空格
+                if (cur_object!="" 
+                    and ( is_english_char(cur_object[-1]) or ('9'>= cur_object[-1] and '0'<= cur_object[-1]))
+                    and not(tokens[j].startswith("#"))
+                    and is_english_char(origin_text[left]) # 如果其后也是英文 
+                    and origin_text[left] != '-' # 不是连字符
+                    ):
+                    cur_object+=" "
+                cur_object += origin_text[left:right]
+                
+                #cur_object += origin_text[i-1] # 因为有的字无法识别，所以这里用origin_text. i-1 是因为 相比而言，origin_text 少了 [CLS]
+                cur_object_label = id2object_map[str(ind.item())]
+            if ind == 1 and cur_object!="": # 说明是中间部分，且 cur_object 不为空
+                offset = offset_mapping[j]
+                left,right = tuple(offset)
+                if( (is_english_char(cur_object[-1]) or ('9'>= cur_object[-1] and '0'<= cur_object[-1]))
+                    and not(tokens[j].startswith("#"))
+                    and is_english_char(origin_text[left]) # 如果其后也是英文
+                    and origin_text[left] !='-'
+                    ):
+                    cur_object+=" "
+                cur_object += origin_text[left:right]
+            elif ind == 0 and cur_object!="": # 将 cur_object 放入到 objects 中
+                cur_object = cur_object.replace("#","") # 替换掉，因为这会干扰后面的实现
+                # 后处理部分之删除不符合规则的数据
+                # 后处理部分之判断object 的长度：如果长度大于1的才放进去
+                if ( (len(cur_object)> 1)
+                    and cur_object_label != 19 # 如果不是第19 类（杂类），那么就放入其中
+                    ):
+                    objects.append(cur_object)                                
+                    cur_object_label = cur_object_label.replace("#","")
+                    labels.append(cur_object_label)
+                cur_object = ""
+        
+        detail_info = [(fi.item(),round(fv.item(),3),si.item(),round(sv.item(),3),t) for fi,fv,si,sv,t in zip(first_indexs,first_values,second_indexs,second_values,tokens)]
+
+
+        # 从次大的下标中寻找，此时需要注意其得分情况
+        cur_object = ""
+        k = 0
+        pre_distance = 0 # 表示的是上一次fi_val 和 se_val 之间的距离差值
+        cur_distance = 0 # 当前两者的差值
+        for fi_ind,fi_val,se_ind,se_val in zip(first_indexs,first_values,second_indexs,second_values):
+            cur_distance = abs(se_val-fi_val)
+
+            # 第一种结束方式——说明是分界点
+            if (abs(cur_distance-pre_distance) > up_threshold 
+                and k # 排除掉CLS向量
+                ): 
+                if cur_object!="":
+                    cur_object = cur_object.replace("#","") # 替换掉，因为这会干扰后面的实现
+                    flag = 1
+                    cur_object = cur_object.strip("《》，。+-.:：（）()、/\\！!") # 剃掉两边的所有符号                        
+                    for have in objects: # 判断当前此轮预测的结果是否出现在之前的预测结果中
+                        if (have.startswith(cur_object)
+                            or have.find(cur_object)!=-1 # 如果该串作为子串出现过
+                            ):
+                            flag = 0
+                            break
+                    # 后处理部分之删除不符合规则的数据
+                    # 后处理部分之判断object 的长度：如果长度大于1的才放进去
+                    if (cur_object_label != 19 # 如果不是第19 类（杂类），那么就放入其中
+                        and len(cur_object) > 1
+                        and flag
+                        ):                        
+                        objects.append(cur_object)
+                        cur_object_label = "top_2"
+                        labels.append(cur_object_label)
+                    cur_object = ""
+                else: # 说明是一个标签的开始
+                    if (fi_ind<=1 # 如果它在top_1 中就已经是标签了，则要过滤
+                        and cur_distance < pre_distance
+                        and se_val > 3
+                        ): 
+                        offset = offset_mapping[k]
+                        left,right = tuple(offset)
+                        # 判断上一个字符是否是字母结束（英文）/数字并且当前的是否不是#开头 => 需要安排一个空格
+                        if (cur_object!="" 
+                            and ( is_english_char(cur_object[-1]) or ('9'>= cur_object[-1] and '0'<= cur_object[-1]))
+                            and not(tokens[k].startswith("#"))
+                            and is_english_char(origin_text[left]) # 如果其后也是英文 
+                            and origin_text[left] != '-' # 不是连字符
+                            ):
+                            cur_object+=" "
+                        cur_object += origin_text[left:right]            
+                        cur_object_label = id2object_map[str(se_ind.item())]
+                    else:
+                        cur_object = ""
+            
+            # 说明是中间部分
+            elif (cur_object!="" 
+                and abs(cur_distance - pre_distance) < down_threshold                
+                ): 
+                if( se_val > val_threshold# 当前也要过关
+                    and fi_ind <= 1
+                    ): 
+                    offset = offset_mapping[k]
+                    left,right = tuple(offset)
+                    if( 
+                        (is_english_char(cur_object[-1]) or ('9'>= cur_object[-1] and '0'<= cur_object[-1]))
+                        and not(tokens[k].startswith("#"))
+                        and is_english_char(origin_text[left]) # 如果其后也是英文
+                        and origin_text[left] != '-'
+                        ):
+                        cur_object+=" "
+                    cur_object += origin_text[left:right]
+                else:
+                    cur_object = ""
+            
+            # 第二种结束标志
+            # 结束的标志要严格， 所以这里用or，两者
+            elif(abs(cur_distance-pre_distance) > down_threshold  # 超过间内的距离
+                or se_val < val_threshold
+                ): 
+                if cur_object!="":
+                    cur_object = cur_object.replace("#","") # 替换掉，因为这会干扰后面的实现
+                    flag = 1
+                    cur_object = cur_object.strip("《》，。+-.:：（）()、/\\！!") # 剃掉两边的所有符号                        
+                    for have in objects: # 判断当前此轮预测的结果是否出现在之前的预测结果中
+                        if (have.startswith(cur_object)
+                            or have.find(cur_object)!=-1 # 如果该串作为子串出现过
+                            ):
+                            flag = 0
+                            break
+                    # 后处理部分之删除不符合规则的数据
+                    # 后处理部分之判断object 的长度：如果长度大于1的才放进去
+                    if ( cur_object_label != 19 # 如果不是第19 类（杂类），那么就放入其中
+                        and len(cur_object) > 1
+                        and flag
+                        ):                      
+                        objects.append(cur_object)
+                        cur_object_label = "top_2"
+                        labels.append(cur_object_label)
+                    cur_object = ""
+            k+=1
+            pre_distance = cur_distance
+
+        batch_objects.append(objects)
+        batch_labels.append(labels)
+        i+=1 
+
+    return batch_objects,batch_labels
+
+
+
 
 """
 功能： 将最后的结果解码并输出，这个函数是在 relation2id.json 中适用的，同样适用于 predicate2id.json 文件
@@ -853,9 +1116,28 @@ def decode_relation_class(logits,id2relation_map):
     a = m(logits)
     indexs = a.argmax(-1) # 找出每个batch的属性下标
     clas = []
-    for idx in indexs:
-        cur_cls = id2relation_map[str(idx.item())]
-        clas.append(cur_cls)      
+    # for idx in indexs:
+    #     cur_cls = id2relation_map[str(idx.item())]
+    #     clas.append(cur_cls)      
+
+    # 添加top_2 策略
+    #logits # size [batch_size, relation_class_num]
+    threshold = 11
+    temp = t.topk(logits,k=2,dim=-1)
+    value,index = temp
+    index = index.transpose(1,0)
+    second_indexs = index[1] # 排第二的index
+    value = value.transpose(1,0)
+    second_values = value[1]
+
+    for item in zip(indexs,second_indexs,second_values):
+        first_idx,second_idx,second_value = item
+        if first_idx.item() == 0 and  second_value > threshold: # 代表是O类            
+                cur_cls = id2relation_map[str(second_idx.item())]
+                clas.append(cur_cls)        
+        else:
+            cur_cls = id2relation_map[str(first_idx.item())]
+            clas.append(cur_cls)
     return clas
 
     
@@ -1245,20 +1527,40 @@ def get_all_subjects(train_data_path):
 
 
 """
-将不同的预测结果值合并在一起
+将两个预测文件的预测值合并在一起
 """
 def combine_all_pred(pred_file_1,pred_file_2):
-    cont_1 = []
-    with open(pred_file_1,'r') as f:
-        line = f.readline()
-        while(line):
-            line = json.loads(line)             
-            line = f.readline()
+    cont = []
+    out_file_path = './data/fin_res.json'
+    res1_map ={} # text => pred
+    res2_map = {}
+    # 逐行合并
+    with open(pred_file_1,'r') as f1:        
+        line1 = f1.readline()        
+        while(line1):
+            line1 = json.loads(line1)            
+            text = line1['text']
+            spo_list_1 = line1['spo_list'] # list
+            res1_map[text] = spo_list_1
+            line1 = f1.readline()            
     
-    with open(pred_file_1,'r') as f:
-        line = f.readline()
-    pass
+    with open(pred_file_2,'r') as f2:
+        line2 = f2.readline()
+        while(line2):        
+            line2 = json.loads(line2)
+            text = line2['text']
+            spo_list_2 = line2['spo_list']
+            if text in res1_map.keys():
+                spo_list_2.extend(res1_map[text])
+            cont.append({"text":text,"spo_list":spo_list_2})
+            line2 = f2.readline()
 
+
+
+    with open(out_file_path,'w') as f:
+        for line in cont:
+            json.dump(line,f,ensure_ascii=False)
+            f.write("\n")
 
 
 # 添加所有的国家 object
@@ -1360,16 +1662,14 @@ def add_write_ci_relation(pred_file_path):
 """
 将文本中的空格全部替换成句号
 01.书名号中的空格不能替换
+02.如果是符号后的空格，则直接压缩。
 """
 def replace_space2period(in_data_path,out_data_path):
-    chinese_punctuation = [ "。" , "？", "！", "，","、", "；", "：","‘",
-             "’", "“", "”", "（","）", "〔", "〕", "【", "】", "—", "…","–","―",'《','》']
-    
-    punctuation = [ "。" , "？", "！", "，","、", "；", "：","‘",
-             "’", "“", "”", "（","）", "〔", "〕", "【", "】", "—", "…","–","―",'《','》','．' # chinese
+    punctuation = [ "。","？", "！", "，","、", "；", "：","‘",
+             "’", "“", "”", "（","）", "〔", "〕", "【", "】", "—", "…","–", "―", '《', '》', '．', # chinese
              ',','.',':', '-'# english
              ] 
-    valid = []
+    invalid = []
     total = 0
     after = []
     with open(in_data_path,'r') as f:
@@ -1377,7 +1677,7 @@ def replace_space2period(in_data_path,out_data_path):
         while(line):
             line = json.loads(line)
             text = line['text']
-            spo_list = line['spo_list']
+            #spo_list = line['spo_list']
             #不能直接采用公式去压缩空格
             text = re.sub('\s+',' ',text) # 将多个空格转换成一个空格
             cur_text = ""
@@ -1414,34 +1714,132 @@ def replace_space2period(in_data_path,out_data_path):
                     elif word == "》":
                         in_bookname -= 1 
 
-                    # 单独判断本word是否是中文标点符号
+                    # 单独判断本word是否是标点符号
                     if word in punctuation:
                         pre_is_punctuation = True
                     else:
                         pre_is_punctuation = False
-                
-                
+                                
                 pre_word = word
             cur = {}
-            if cnt < 10 and cnt:
+            if cnt < 15 and cnt:
                 cur['text'] = cur_text
                 total += 1
                 after.append(cur_text)
+                invalid.append(cur)
             else:
                 cur['text'] = text
-            cur['spo_list'] = spo_list
-            valid.append(cur)
+            #cur['spo_list'] = spo_list
+            
             line = f.readline()
     print(f"改动的文本有：{total}个")
-    with open(out_data_path,'w') as f:
-        for line in valid:
+    # with open(out_data_path,'w') as f:
+    #     for line in valid:
+    #         json.dump(line,f,ensure_ascii=False)
+    #         f.write("\n")
+
+    with open('./test_data_modify.text','w') as f:
+        for line in invalid:
             json.dump(line,f,ensure_ascii=False)
             f.write("\n")
-
-    with open('./sdf.text','w') as f:
-        for line in after:
-            f.write(line+"\n\n")
             
+"""
+转换文本，将文本中的多余空格替换成有规律的，
+"""
+def transpose_text(text):    
+    punctuation = [ "。","？", "！", "，","、", "；", "：","‘",
+             "’", "“", "”", "（","）", "〔", "〕", "【", "】", "—", "…","–", "―", '《', '》', '．', # chinese
+             ',','.',':', '-'# english
+             ] 
+    
+    
+    #不能直接采用公式去压缩空格
+    text = re.sub('\s+',' ',text) # 将多个空格转换成一个空格
+    cur_text = ""
+    in_bookname = 0 # 前面《 号的个数
+    pre_is_punctuation = False # 上一个字符是否是标点符号
+    cnt = 0 # 为手动添加的句号计数
+    pre_word = '' # 上一个字符
+    for i in range(len(text)):
+        word = text[i]
+        if i != len(text) -1 : # 预判后一个符号
+            next_word = text[i+1] 
+        else:
+            next_word = "end"
+        if word == " " or word =='\xa0': #是空格
+            if in_bookname: #且在书名号中
+                cur_text += word
+            elif ((not pre_is_punctuation)# 上一个词不是标点符号
+                    and (next_word not in punctuation) # 接下来的一个词也不是标点符号
+                    and not ( is_english_char(pre_word) or ('9'>= pre_word and '0'<= pre_word)) # 上一个字符不是英文字符或数字
+                ):
+                cur_text += '，' # 替换成逗号
+                cnt += 1
+                pre_is_punctuation = True # 保证多个空格只被替换一次
+            elif (
+                (is_english_char(pre_word) or ('9'>= pre_word and '0'<= pre_word)) # 当前是英文字符或数字
+                and ( is_english_char(next_word) or ('9'>= next_word and '0'<= next_word)) # 下一个字符不是英文字符或数字
+            ):
+                cur_text +=' ' #加上空格
+                
+        elif word !=" " :
+            cur_text += word
+            if word == "《":
+                in_bookname += 1
+            elif word == "》":
+                in_bookname -= 1 
+
+            # 单独判断本word是否是标点符号
+            if word in punctuation:
+                pre_is_punctuation = True
+            else:
+                pre_is_punctuation = False                            
+        pre_word = word        
+    if cnt < 15 and cnt:
+        return cur_text    
+    else:
+        return "1111"
+    
+
+
+
+"""
+more_path:表示的是文件较大的那个
+less_path:表示的是文件较小的那个（也就是经过错误数据生成得到的）
+"""
+def get_correct_result(more_path,less_path):
+    less_res = {} # text => spo的一个dict
+
+    with open(less_path, 'r') as f:
+        line = f.readline()
+        while(line):
+            line = json.loads(line)
+            text = line['text']
+            spo_list = line['spo_list']
+            less_res[text] = spo_list
+            line = f.readline()
+    
+    
+    fin_res = []    
+    with open(more_path, 'r') as f:
+        line = f.readline()        
+        while(line):
+            line = json.loads(line)
+            text = line['text']            
+            # 执行替换操作
+            a = transpose_text(text)
+            if a in less_res.keys():          
+                line['spo_list'].extend(less_res[a])                
+            fin_res.append(line)
+            line = f.readline()
+    
+    # 写入最后的结果
+    with open('./fin_res.json','w') as f:
+        for line in fin_res:
+            json.dump(line,f,ensure_ascii=False)
+            f.write("\n")
+    
+
 
 if __name__ == "__main__":
     #get_precision_recall_f1(golden_file="./data/dev_data.json",
@@ -1454,9 +1852,12 @@ if __name__ == "__main__":
     #     train_data_path="./data/train_data.json"
     # )
     #get_all_country(train_data_path="./data/train_data.json")
-    add_write_ci_relation(pred_file_path="./data/test_data_predict_001.json_valid.json")
-    # in_data_path='./data/raw_data/train_data_20.json'
-    # out_data_path='./data/train_data_20.json'
+    #add_write_ci_relation(pred_file_path="./data/test_data_predict_001.json_valid.json")
+    # in_data_path='./data/test_data.json'
+    # out_data_path='./data/test_data_valid.json'
     # if os.path.exists(out_data_path):
     #     os.remove(out_data_path)
-    # replace_space2period(in_data_path,out_data_path)
+    #replace_space2period(in_data_path,out_data_path)
+    # get_correct_result(more_path="/home/lawson/program/DuIE_py/data/test_data_predict_556673_9.json_valid.json",
+    # less_path="/home/lawson/program/DuIE_py/data/test_data_modify_predict_556673_9.json")
+    combine_all_pred(pred_file_1='./data/test_data_predict_valid_71.71.json',pred_file_2='./data/test_data_predict_556673_20210428_11.json_valid.json')
