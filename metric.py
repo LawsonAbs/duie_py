@@ -1,5 +1,5 @@
 import json
-
+import os
 """
 测试效果的库
 """
@@ -12,6 +12,7 @@ import json
 params:
 """
 def cal_subject_metric(dev_data_file_path,pred_file_path):
+    print(f"源文件是{dev_data_file_path}，预测文件是{pred_file_path}")
     pred_subjects = []    
     with open(pred_file_path,'r') as f:    
         cur_subjects = set()
@@ -269,9 +270,9 @@ def cal_subject_object_metric(pred_file_path,dev_data_file_path):
                 sub_obj = [] # 重置
                 line = f.readline()
                 continue
-            line = line.split() # 分割
+            line = line.split("\t") # tab分割
             if line[0]!='None' and len(line) >= 2:
-                sub = "".join(line[0:-1])
+                sub = line[0]
                 obj = line[-1]
                 if obj != None:
                     sub_obj.append(sub+"_"+obj)
@@ -286,10 +287,12 @@ def cal_subject_object_metric(pred_file_path,dev_data_file_path):
         for pred in  preds:
             if pred in golds:
                 correct_num += 1
+            else:
+                redundant.append(pred)
         for gold in golds:
             if gold not in preds:
                 forget.append(gold)
-            
+
     recall = correct_num/gold_num
     if pred_num == 0:
         precision = 0
@@ -302,22 +305,35 @@ def cal_subject_object_metric(pred_file_path,dev_data_file_path):
     
     print(f"recall = {recall},\nprecision={precision},\nf1={f1}")
     print(f"correct_num={correct_num}\npred_num={pred_num}\ngold_num={gold_num}")
-    temp = pred_file_path+"_forget.text"
-    with open(temp,'w') as f:
+    forget_temp = pred_file_path+"_forget.text"
+    if os.path.exists(forget_temp):
+        os.remove(forget_temp)
+    with open(forget_temp,'w') as f:
         for line in forget:
             line = line.split("_")
             left = "".join(line[0:-1])
             right = line[-1]
             f.write(left+"\t"+right+"\n")
 
+    redundant_temp = pred_file_path+"_redundant.text"
+    if os.path.exists(redundant_temp):
+        os.remove(redundant_temp)
+    with open(redundant_temp,'w') as f:
+        for line in redundant:
+            line = line.split("_")
+            left = "".join(line[0:-1])
+            right = line[-1]
+            f.write(left+"\t"+right+"\n")    
+
     return recall,precision,f1
 
 if __name__ == "__main__":
-    dev_data_path = "/home/lawson/program/DuIE_py/data/dev_data_5000.json"
+    dev_data_path = "/home/lawson/program/DuIE_py/data/dev_data_100.json"
     # pred_file_path = "./data/predict/dev_data_subject_predict_model_subject_bert_64236_3333.txt"
-    pred_file_path = "./data/predict/dev_data_subject_predict_model_subject_60000_roberta.txt"
+    #pred_file_path = "./data/predict/dev_data_subject_predict_model_subject_60000_roberta.txt"
     #cal_subject_metric(dev_data_file_path,pred_file_path)
     #visual_diff_subject(dev_data_file_path,pred_file_path)
     
-    pred_file_path = "/home/lawson/program/DuIE_py/data/dev_data_5000_object_predict.txt"
+    pred_file_path = "/home/lawson/program/DuIE_py/data/dev_data_100_object_predict.txt"
     cal_subject_object_metric(pred_file_path=pred_file_path,dev_data_file_path= dev_data_path)
+    #cal_subject_metric(dev_data_file_path=dev_data_path,pred_file_path=pred_file_path)
