@@ -185,6 +185,9 @@ def evaluate(model_subject,dev_data_loader,criterion,pred_file_path, crf,all_kno
                 #print("----- 未预测到subject ----------")
                 invalid_num+=1
                 continue
+
+            logger.info(f"当前文本是：{batch_origin_info}")
+            logger.info(f"损失是：{cur_loss}")
         
         # 写入到文件中(w)
         #visualize_subject(pred_file_path, all_subjects)
@@ -241,7 +244,7 @@ def do_train():
         )
 
     dev_data_loader = DataLoader(        
-        dataset=dev_dataset,
+        dataset=dev_dataset,        
         batch_size=args.batch_size,
         collate_fn=collator, # 重写一个 collator
         )
@@ -364,7 +367,7 @@ if __name__ == "__main__":
         model_subject = SubjectModel(bert_name_or_path,768,out_fea=subject_class_num)
         if (args.init_checkpoint != None): # 加载初始模型
             model_subject.load_state_dict(t.load(args.init_checkpoint))
-        model_subject = model_subject.cuda()        
+        model_subject = model_subject.cuda()
         
         collator = TrainSubjectDataCollator()
         # Loads dataset.
@@ -384,10 +387,10 @@ if __name__ == "__main__":
             )
         
         # 找出训练数据集中已知的所有subjects 
-        all_known_subjects = get_all_subjects(all_subject_path=None,train_data_path=args.dev_data_path)
+        all_known_subjects = get_all_subjects(train_data_path=args.dev_data_path)
         temp1 = (args.dev_data_path).split("/")[-1].split(".")[0]
         temp2 = (args.init_checkpoint).split("/")[-1]
-        pred_file_path = f"/home/lawson/program/DuIE_py/data/predict/{temp1}_predict_subject_{temp2}.txt"
+        pred_file_path = f"/home/lawson/program/DuIE_py/data/predict/{temp1}_predict_subject_{temp2}_7_3.txt"
         if os.path.exists(pred_file_path):
             os.remove(pred_file_path)
         evaluate(model_subject,dev_data_loader,criterion,pred_file_path,crf=None,all_known_subjects=all_known_subjects)

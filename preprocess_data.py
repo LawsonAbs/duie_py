@@ -4,14 +4,17 @@ import json
 预处理数据，得到 id2subject.json
 """
 def get_id2subject(in_path,out_path):
-    subject_map={}        
+    subject_map={}
     with open(in_path,'r') as f:
         cont = json.load(f)
-        index = 2
+        index = 1
         for row in cont:
-            if row['subject_type'] not in subject_map.values():
-                subject_map[index] = row['subject_type']
-                index+=1
+            b_key = "B_"+row['subject_type']
+            i_key = "I_"+row['subject_type']
+            if b_key not in subject_map.values():
+                subject_map[index] = b_key
+                subject_map[index+1] = i_key
+                index+=2
     
     with open(out_path,'w',encoding="utf-8") as f:
         json.dump(subject_map,f,ensure_ascii=False)
@@ -24,11 +27,14 @@ def get_subject2id(in_path,out_path):
     subject_map={}        
     with open(in_path,'r') as f:
         cont = json.load(f)
-        index = 2
+        index = 1
         for row in cont:
-            if row['subject_type'] not in subject_map.keys():
-                subject_map[row['subject_type']] = index
-                index+=1
+            b_key = "B_"+row['subject_type']
+            i_key = "I_"+row['subject_type']
+            if b_key not in subject_map.keys():
+                subject_map[b_key] = index
+                subject_map[i_key] = index+1
+                index+=2
     
     with open(out_path,'w',encoding="utf-8") as f:
         json.dump(subject_map,f,ensure_ascii=False)
@@ -104,8 +110,24 @@ def get_id2relation(in_path,out_path):
         json.dump(relation_map,f,ensure_ascii=False)
 
 
+def get_id2predicate(in_path,out_path):
+    id2predicate ={}
+    with open(in_path,'r') as f:
+        cont = json.load(f)
+        print(type(cont))
+        for item in cont.items():
+            print(type(item))
+            print(item)
+            key,value = item
+            id2predicate[value] = key
+    
+    with open(out_path,'w',encoding='utf-8') as f:
+        json.dump(id2predicate,f,ensure_ascii=False)
+
+
 
 if __name__ == "__main__":
-    in_path = "./data/duie_schema.json"
-    out_path = "./data/id2object.json"
-    get_id2object(in_path,out_path)
+    in_path = "./data/predicate2id.json"
+    out_path = "./data/id2predicate.json"
+    # get_id2subject(in_path,out_path)
+    get_id2predicate(in_path,out_path)

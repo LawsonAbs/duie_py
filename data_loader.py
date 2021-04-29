@@ -431,7 +431,7 @@ def convert_example_to_subject_feature(
     temp = tokenizer(text_raw,
                     return_tensors="pt",
                     return_offsets_mapping= True,
-                    max_length=128,                     
+                    max_length=max_length,
                     padding="max_length",
                     truncation=True
                     )
@@ -518,7 +518,7 @@ def convert_example_to_object_feature(
     temp = tokenizer(text_raw,
                     return_tensors="pt",
                   return_offsets_mapping= True,
-                  max_length=128,
+                  max_length=max_length,
                   padding="max_length",
                   )
     offset_mapping = temp["offset_mapping"]

@@ -139,9 +139,8 @@ logger = logging.getLogger("relation")
 
 
 # 评测函数
-def evaluate(model_relation,dev_data_loader,tokenizer,pred_file_path):
-    # 设置为训练模式    
-    model_relation.train() # 根据subject+object 预测 relation    
+def evaluate(model_relation,dev_data_loader,tokenizer,pred_file_path):     
+    model_relation.eval() # 根据subject+object 预测 relation    
     gold_num = 0
     correct_num = 0
     m = LogSoftmax(dim=-1)
@@ -400,21 +399,7 @@ def do_train_2(model_subject_path,model_object_path,model_relation_path):
             batch_origin_info,
             offset_mapping,
             all_known_subjects
-            )
-            
-            # 添加一个后处理 => 将所有的书名号中的内容都作为 subject 
-            for item in zip(batch_origin_info,batch_subjects,batch_subject_labels):
-                origin_info,subjects,labels = item
-                target = addBookName(origin_info['text'])
-                for word in target:
-                    if word not in subjects:
-                        subjects.append(word)      
-                        labels.append("后处理")
-                
-                for know in all_known_subjects:
-                    if know in origin_info['text'] and know not in subjects:
-                        subjects.append(know)
-                        labels.extend(["后处理2"])
+            )                   
             
             # 将subjects 中的元素去重                  
             # 需要判断 batch_subjects 是空的情况，最好能够和普通subjects 一样处理        
@@ -460,7 +445,7 @@ def do_train_2(model_subject_path,model_object_path,model_relation_path):
             if relation_input_ids.size(0) < 1:
                 continue
             logger.info(f"relation_input_ids.size(0) = {relation_input_ids.size(0)}")
-            if relation_input_ids.size(0) > 32:               
+            if relation_input_ids.size(0) > 32:
                 out = model_relation(input_ids=relation_input_ids[0:32,:],
                                         token_type_ids=relation_token_type_ids[0:32,:],
                                         attention_mask=relation_attention_mask[0:32,:],

@@ -77,9 +77,9 @@ if not (os.path.exists(id2object_map_path) and os.path.isfile(id2object_map_path
 with open(id2object_map_path, 'r', encoding='utf8') as fp:
     id2object_map = json.load(fp)
 
-
-name_or_path = "/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch"
-model_object = ObjectModel(name_or_path,768,object_class_num)
+roberta_base_name = "/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch"
+roberta_large_name = "/pretrains/pt/clue-roberta_chinese_clue_large"
+model_object = ObjectModel(roberta_base_name,768,object_class_num)
 if args.init_checkpoint is not None and os.path.exists(args.init_checkpoint):
     model_object.load_state_dict(t.load(args.init_checkpoint))
 model_object = model_object.cuda()
@@ -122,8 +122,8 @@ def visualize_object(pred_file_path, all_objects, all_object_labels):
 
 def evaluate(model_object,dev_data_loader,pred_file_path):
     # Does predictions.
-    logger.info("\n====================start  evaluating ====================")   
-    tokenizer = BertTokenizerFast.from_pretrained("/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch")    
+    logger.info("\n====================start  evaluating ====================")       
+    tokenizer = BertTokenizerFast.from_pretrained(roberta_base_name)
     # 将object的预测结果写到文件中
     if os.path.exists(pred_file_path):# 因为下面是追加写入到文件中，所以
         os.remove(pred_file_path)

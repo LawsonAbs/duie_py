@@ -31,7 +31,7 @@ def get_subject_class_num(train_data_path):
 找出预测结果中 object 不包含@value的部分
 """
 def look_error():
-    data_path = "/home/lawson/program/DuIE_py/data/test_data_predict_001.json"
+    data_path = "/home/lawson/program/DuIE_py/data/test_data_predict_524566_20210428_11.json"
     valid = []
     out_path = data_path + "_valid.json"
     cnt = 0
@@ -211,8 +211,8 @@ if __name__ == "__main__":
     # get_subject_class_num(
     #     train_data_path='./data/dev_data.json'
     # )
-    #look_error()
+    look_error()
     #analysis_relation(relation_pred_file="/home/lawson/program/DuIE_py/data/predict/relation/relation_predict_513882_roberta.txt")
     #analysis_location(file_path='./data/train_data.json')
-    #analysis_text_length(file_path='./data/dev_data.json')
-    analysis_object()
+    #analysis_text_length(file_path='./data/test_data.json')
+    #analysis_object()
