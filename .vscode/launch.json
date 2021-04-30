@@ -34,20 +34,20 @@
             "request": "launch",
             "program": "run_2.py",
             "console": "integratedTerminal",
-            "env": {"CUDA_VISIBLE_DEVICES":"1"},
+            "env": {"CUDA_VISIBLE_DEVICES":"0"},
             "args": [
                 //"--do_train",
                 "--do_eval",
                 "--n_gpu", "1",
                 "--seed", "42",       
                 "--data_path","./data",
-                "--max_seq_length", "128",
-                "--batch_size", "4",
+                "--max_seq_length", "256",
+                "--batch_size", "1",
                 "--eval_batch_size", "1", //这里仅仅支持batch_size 为1
                 "--num_train_epochs","12",            
-                "--init_checkpoint","/home/lawson/program/DuIE_py/model_object/model_object_556706_bert.pdparams",
+                "--init_checkpoint","/home/lawson/program/DuIE_py/checkpoints/model_object_142745_bert_f1_0.7892284351972257.pdparams",
                 "--output_dir", "/home/lawson/program/DuIE_py/checkpoints",
-                "--train_data_path","/home/lawson/program/DuIE_py/data/train_data_1000.json",
+                "--train_data_path","/home/lawson/program/DuIE_py/data/train_data_100.json",
                 "--dev_data_path","/home/lawson/program/DuIE_py/data/dev_data_100.json"
             ]
         },
@@ -66,7 +66,7 @@
                     "--data_path","./data",
                     "--train_data_path", "/home/lawson/program/DuIE_py/data/train_data_100.json",
                     "--dev_data_path", "/home/lawson/program/DuIE_py/data/dev_data_10.json",
-                    "--max_seq_length", "128",
+                    "--max_seq_length", "256",
                     "--batch_size", "2",
                     "--num_train_epochs","5", // 如果是在负样本上，就跑2个epoch
                     "--output_dir", "./checkpoints",
