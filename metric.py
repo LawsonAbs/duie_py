@@ -192,7 +192,7 @@ def visual_diff_subject(dev_data_file_path,pred_file_path):
 
 
 # 评测object 的预测性能
-def cal_object_metric(all_objects,dev_data_file_path):
+def cal_object_metric(pred_file_path,dev_data_file_path):
     gold_objects = []
     with open(dev_data_file_path,'r') as f:        
         line = f.readline()
@@ -212,24 +212,67 @@ def cal_object_metric(all_objects,dev_data_file_path):
             gold_objects.append(line_objects)            
             line = f.readline()
     
+    all_objects = []
+    with open(pred_file_path,'r') as f:
+        line = f.readline()
+        while(line):
+            line_objects = set() # 当前这条样例中的数据
+            line = line.strip("\n")
+            if line.startswith("None"):
+                all_objects.append([]) # 加入一个空的
+            elif len(line) != 0:
+                line = line.split()
+                all_objects.append(line)
+            
+            line = f.readline()
+
     correct_num = 0    
     pred_num = 0
     gold_num = 0
+    redundant = []
+    forget = []
     for item in zip(all_objects,gold_objects): # 每条样本
         preds,golds = item
         preds = set(preds) # 变成set
+        golds = set(golds)
         pred_num += len(preds)
         gold_num += len(golds)
         for pred in preds:
             if pred in golds:
                 correct_num+=1
-    
-    recall = correct_num / gold_num
-    precision = correct_num / pred_num
+            else:
+                redundant.append(pred)
+        
+        for gold in golds:
+            if gold not in preds:
+                forget.append(gold)
+    if gold_num == 0:
+        recall = 0
+    else:
+        recall = correct_num / gold_num
+    if pred_num == 0:
+        precision = 0
+    else:
+        precision = correct_num / pred_num
     if (recall + precision) == 0:
         f1 = 0
     else:
         f1 = (2*recall*precision) / (recall+precision)
+
+    forget_temp = pred_file_path+"_forget.txt"
+    if os.path.exists(forget_temp):
+        os.remove(forget_temp)
+    with open(forget_temp,'w') as f:
+        for line in forget:                        
+            f.write(line+"\n")
+
+    redundant_temp = pred_file_path+"_redundant.txt"
+    if os.path.exists(redundant_temp):
+        os.remove(redundant_temp)
+    with open(redundant_temp,'w') as f:
+        for line in redundant:            
+            f.write(line+"\n")
+    
     return (recall,precision,f1)
 
 
