@@ -296,13 +296,12 @@ def parse_subject_label_3(spo_list, tokens, tokenizer):
 
 
 '''
-功能：解析object 的label。这个函数的目的是为了找到object 值的label
+功能：解析object 的label。这个函数的目的是为了找到训练 object 时的label
 '''
 def parse_object_label(spo_list, object_map, tokens, tokenizer):    
     seq_len = len(tokens)
     # initialize tag
-    labels = [0 for i in range(seq_len)]
-    include = []
+    labels = [0 for i in range(seq_len)]    
     # 找出所有的object的值
     for spo in spo_list:
         object_vals = list(spo['object'].values())
@@ -917,15 +916,24 @@ def process_example_object(example,subjects):
     text_raw = example['text']
     # 如果subjects 为None，说明是在train模式，那么我们自己手动生成，否则就用传入的subjects
     if subjects is None:
-        subjects = []
-        for spo in spo_list:
-            subject = spo['subject']  # dict
-            subjects.append(subject)
-            text = subject + '。' + text_raw
-            
-            # 下面这里应该是 [spo]，重大bug!!
-            cur_example = {"spo_list":[spo],"text":text}
-            examples.append(cur_example)
+        # # 将subject 拼接在其前的方式
+        # subjects = []
+        # subject_spo = {} # subject 到 spo(是一个[]) 的map
+        # for spo in spo_list:
+        #     subject = spo['subject']  # dict
+        #     # 这里为啥要修改 subjects 的值？
+        #     # subjects.append(subject) 
+        #     text = subject + '。' + text_raw
+        #     if subject not in subject_spo.keys():
+        #         subject_spo[subject] = []
+        #         subject_spo[subject].append(spo)
+        #     else:
+        #         subject_spo[subject].append(spo)
+        pass      
+        # for item in list(subject_spo.items()):
+        #     subject , spo = item
+        #     cur_example = {"spo_list":spo,"text":text}
+        #     examples.append(cur_example)        
     # in predict 
     elif len(subjects) == 0: # subject = [] 这种情况
         cur_example = {"spo_list":spo_list,"text":text_raw}
@@ -1096,8 +1104,8 @@ def from_dict2object(batch_subjects,
         for example in batch_origin_dict:            
             # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条                
             # 先预处理，将一个example 变成(在其前追加subject+['SEP'])变为多个 example
-            examples = process_example_object(example,subjects=None)
-            for example in examples:
+            # examples = process_example_object(example,subjects=None)
+            #for example in examples:
                 input_feature = convert_example_to_object_feature(
                     example, tokenizer, chineseandpunctuationextractor,
                     object_map, max_length)
@@ -1155,13 +1163,13 @@ def from_dict2object4_evaluate(
     for example in batch_origin_dict:            
         # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条                
         # 先预处理，将一个example 变成(在其前追加subject+['SEP'])变为多个 example
-        examples = process_example_object(example,subjects=None)
-        valid_subjects = set() # 保证当前这个subject在此样本中不重复
-        # 添加一层过滤，如果有多个相似的 subject ，那么只取一个
-        for example in examples:
-            cur_subject = example['spo_list'][0]['subject']
-            if cur_subject not in valid_subjects:
-                valid_subjects.add(cur_subject)
+        # examples = process_example_object(example,subjects=None)
+        # valid_subjects = set() # 保证当前这个subject在此样本中不重复
+        # # 添加一层过滤，如果有多个相似的 subject ，那么只取一个
+        # for example in examples:
+            # cur_subject = example['spo_list'][0]['subject']
+            # if cur_subject not in valid_subjects:
+            #     valid_subjects.add(cur_subject)
                 input_feature = convert_example_to_object_feature(
                     example, tokenizer, chineseandpunctuationextractor,
                     object_map, max_length)
