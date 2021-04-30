@@ -901,11 +901,14 @@ def decode_object_bp(logits,id2object_map,tokenizer,batch_object_input_ids,batch
 
 
 
-def decode_object(logits,id2object_map,tokenizer,batch_object_input_ids,batch_object_origin_info,batch_object_offset_mapping):
+def decode_object(logits,id2object_map,tokenizer,batch_object_input_ids,
+                batch_object_origin_info,batch_object_offset_mapping,logger):
 # step1.对top1 进行解码
     m = LogSoftmax(dim=-1)
     a = m(logits)
-    first_batch_indexs = a.argmax(-1) # 在该维度找出值最大的，就是预测出来的标签    
+    first_batch_indexs = a.argmax(-1) # 在该维度找出值最大的，就是预测出来的标签        
+    country = ['秦','晋','唐','宋','元','明','清','汉','吴','隋','蜀']
+    number = ['1','2','3','4','5','6','7','8','9','一','二','三','肆','伍','陆','柒','捌','玖','拾']
 
     # step 2.对top2进行解码
     c = t.topk(logits,k=2,dim=-1) # 直接在logits上取
@@ -921,7 +924,7 @@ def decode_object(logits,id2object_map,tokenizer,batch_object_input_ids,batch_ob
     second_batch_values = batch_value[:,1,:]
 
     # 对 first_batch_indexs 的值进行一个预处理（矫正），用于找出被漏掉的大概率数据
-    for batch_index,origin in first_batch_indexs,batch_object_origin_info:
+    for batch_index,origin in zip(first_batch_indexs,batch_object_origin_info):
         for i in range(len(batch_index)):
             fir_val = batch_index[i]
             if fir_val == 0:
@@ -932,20 +935,16 @@ def decode_object(logits,id2object_map,tokenizer,batch_object_input_ids,batch_ob
                     and batch_index[i-1] == 1
                     and batch_index[i-2] >= 1
                     ):
-                    batch_index[i] = 1 
-                    print("修改")
-                    print(origin)
+                    batch_index[i] = 1                     
+                    logger.info(f"被修改的文本是：{origin}")
                 # 矫正 0 1 1 1 0 0 这种情况
                 elif ( (i+2) < len(batch_index)
                     and batch_index[i+1] == 1 
-                    and batch_index[i+2] == 1                    
+                    and batch_index[i+2] == 1
                     ):
-                    batch_index[i] = 2 
-                    print("修改")
-                    print(origin)
-    up_threshold = 8 # 间外
-    down_threshold = 4 # 间内
-    val_threshold = 4 # 单个值也必须满足一定的要求
+                    batch_index[i] = 2
+                    logger.info(f"被修改的文本是：{origin}")
+                
     # step3.开始解码
     batch_objects =[]
     batch_labels = []
@@ -958,22 +957,31 @@ def decode_object(logits,id2object_map,tokenizer,batch_object_input_ids,batch_ob
         objects = [] # 预测出最后的结果
         labels = []
         cur_object = ""
+        detail_info = [(fi.item(),round(fv.item(),3),si.item(),round(sv.item(),3),t) for fi,fv,si,sv,t in zip(first_indexs,first_values,second_indexs,second_values,tokens)]
         for j,ind in enumerate(first_indexs):
             if ind > 1 : # 说明是一个标签的开始
                 offset = offset_mapping[j]
                 left,right = tuple(offset)
-                # 判断上一个字符是否是字母结束（英文）/数字并且当前的是否不是#开头 => 需要安排一个空格
-                if (cur_object!="" 
-                    and ( is_english_char(cur_object[-1]) or ('9'>= cur_object[-1] and '0'<= cur_object[-1]))
-                    and not(tokens[j].startswith("#"))
-                    and is_english_char(origin_text[left]) # 如果其后也是英文 
-                    and origin_text[left] != '-' # 不是连字符
+                if(cur_object!=""): # 说明紧接着
+                    if ( (len(cur_object)> 1)
+                     or (len(cur_object)==1 and (cur_object in country or cur_object in country))
                     ):
-                    cur_object+=" "
+                        objects.append(cur_object)
+                        cur_object_label = cur_object_label.replace("#","")                    
+                        labels.append(cur_object_label)
+                    cur_object = ""
+
+                # 判断上一个字符是否是字母结束（英文）/数字并且当前的是否不是#开头 => 需要安排一个空格
+                # if (( is_english_char(cur_object[-1]) or ('9'>= cur_object[-1] and '0'<= cur_object[-1]))
+                #     and not(tokens[j].startswith("#"))
+                #     and is_english_char(origin_text[left]) # 如果其后也是英文 
+                #     and origin_text[left] != '-' # 不是连字符
+                #     ):
+                #     cur_object+=" "
                 cur_object += origin_text[left:right]
-                
                 #cur_object += origin_text[i-1] # 因为有的字无法识别，所以这里用origin_text. i-1 是因为 相比而言，origin_text 少了 [CLS]
                 cur_object_label = id2object_map[str(ind.item())]
+
             if ind == 1 and cur_object!="": # 说明是中间部分，且 cur_object 不为空
                 offset = offset_mapping[j]
                 left,right = tuple(offset)
@@ -986,19 +994,27 @@ def decode_object(logits,id2object_map,tokenizer,batch_object_input_ids,batch_ob
                 cur_object += origin_text[left:right]
             elif ind == 0 and cur_object!="": # 将 cur_object 放入到 objects 中
                 cur_object = cur_object.replace("#","") # 替换掉，因为这会干扰后面的实现
+                cur_object = cur_object.strip("《》，。+-.:：（）()、/\\！!") # 剃掉两边的所有符号
                 # 后处理部分之删除不符合规则的数据
                 # 后处理部分之判断object 的长度：如果长度大于1的才放进去
                 if ( (len(cur_object)> 1)
-                    and cur_object_label != 19 # 如果不是第19 类（杂类），那么就放入其中
+                     or (len(cur_object)==1 and (cur_object in country or cur_object in country))
                     ):
-                    objects.append(cur_object)                                
-                    cur_object_label = cur_object_label.replace("#","")
+                    objects.append(cur_object)
+                    cur_object_label = cur_object_label.replace("#","")                    
                     labels.append(cur_object_label)
                 cur_object = ""
-        
-        detail_info = [(fi.item(),round(fv.item(),3),si.item(),round(sv.item(),3),t) for fi,fv,si,sv,t in zip(first_indexs,first_values,second_indexs,second_values,tokens)]
+            
 
-
+        # 之前没有找到，那么就采取较为宽容的策略
+        if len(objects) == 0:
+            up_threshold = 6 # 间外
+            down_threshold = 4 # 间内
+            val_threshold = 3 # 单个值也必须满足一定的要求
+        else:
+            up_threshold = 6 # 间外
+            down_threshold = 4 # 间内
+            val_threshold = 3
         # 从次大的下标中寻找，此时需要注意其得分情况
         cur_object = ""
         k = 0
@@ -1014,7 +1030,7 @@ def decode_object(logits,id2object_map,tokenizer,batch_object_input_ids,batch_ob
                 if cur_object!="":
                     cur_object = cur_object.replace("#","") # 替换掉，因为这会干扰后面的实现
                     flag = 1
-                    cur_object = cur_object.strip("《》，。+-.:：（）()、/\\！!") # 剃掉两边的所有符号                        
+                    cur_object = cur_object.strip("《》，。+-.:：（）()、/\\！!") # 剃掉两边的所有符号
                     for have in objects: # 判断当前此轮预测的结果是否出现在之前的预测结果中
                         if (have.startswith(cur_object)
                             or have.find(cur_object)!=-1 # 如果该串作为子串出现过
@@ -1023,8 +1039,7 @@ def decode_object(logits,id2object_map,tokenizer,batch_object_input_ids,batch_ob
                             break
                     # 后处理部分之删除不符合规则的数据
                     # 后处理部分之判断object 的长度：如果长度大于1的才放进去
-                    if (cur_object_label != 19 # 如果不是第19 类（杂类），那么就放入其中
-                        and len(cur_object) > 1
+                    if (len(cur_object) > 1
                         and flag
                         ):                        
                         objects.append(cur_object)
@@ -1088,8 +1103,7 @@ def decode_object(logits,id2object_map,tokenizer,batch_object_input_ids,batch_ob
                             break
                     # 后处理部分之删除不符合规则的数据
                     # 后处理部分之判断object 的长度：如果长度大于1的才放进去
-                    if ( cur_object_label != 19 # 如果不是第19 类（杂类），那么就放入其中
-                        and len(cur_object) > 1
+                    if ( (len(cur_object) > 1 or (len(cur_object)==1 and (cur_object in country or cur_object in number)))
                         and flag
                         ):                      
                         objects.append(cur_object)
@@ -1506,6 +1520,36 @@ def visualize_subject_object_2(file_path,batch_subjects,batch_objects):
         f.write("\n")
 
 
+
+
+"""
+仅仅写入object，而不写入subject
+"""
+def visualize_object(file_path,batch_objects):        
+    with open(file_path,'a') as f:
+        for objects in batch_objects:# 找出每条句子的所有subject                 
+            if len(objects) == 0:
+                f.write("None")
+            for object in objects:
+                line = object +"\t"
+                f.write(line)        
+        # 在每条样本后需要一个换行
+            f.write("\n\n")
+
+
+"""
+可视化object的预测结果
+"""
+def visualize_object_2(pred_file_path, all_objects, all_object_labels):
+    with open(pred_file_path,'w') as f:
+        for item in zip(all_objects,all_object_labels):
+            objects,labels = item
+            f.write(str(objects) +"\n")
+            f.write(str(labels) + "\n")
+            f.write("\n")
+
+
+
 """
 功能：从train_data.json中得到所有的subject集合
 01.过滤subject 长度=1 的
@@ -1577,7 +1621,9 @@ def get_all_country(train_data_path):
                 if predicate == '国籍' :
                     all_country.add(country['@value'])
             line = f.readline()
-    #print(all_country)
+    for country in all_country:
+        if len(country) == 1:
+            print(country)
     return all_country
 
 
@@ -1839,6 +1885,18 @@ def get_correct_result(more_path,less_path):
             json.dump(line,f,ensure_ascii=False)
             f.write("\n")
     
+#5000 个
+def analysis_text(file_path):
+    cnt = 0
+    with open(file_path,'r') as f:
+        line = f.readline()
+        while(line):
+            line = line.strip("\n")
+            #print(line)
+            if len(line) == 1:
+                cnt+=1
+            line = f.readline()    
+    print(cnt)
 
 
 if __name__ == "__main__":
@@ -1851,7 +1909,7 @@ if __name__ == "__main__":
     #     all_subject_path=None,
     #     train_data_path="./data/train_data.json"
     # )
-    #get_all_country(train_data_path="./data/train_data.json")
+    get_all_country(train_data_path="./data/train_data.json")
     #add_write_ci_relation(pred_file_path="./data/test_data_predict_001.json_valid.json")
     # in_data_path='./data/test_data.json'
     # out_data_path='./data/test_data_valid.json'
@@ -1860,4 +1918,5 @@ if __name__ == "__main__":
     #replace_space2period(in_data_path,out_data_path)
     # get_correct_result(more_path="/home/lawson/program/DuIE_py/data/test_data_predict_556673_9.json_valid.json",
     # less_path="/home/lawson/program/DuIE_py/data/test_data_modify_predict_556673_9.json")
-    combine_all_pred(pred_file_1='./data/test_data_predict_valid_71.71.json',pred_file_2='./data/test_data_predict_556673_20210428_11.json_valid.json')
+    #combine_all_pred(pred_file_1='./data/test_data_predict_valid_71.71.json',pred_file_2='./data/test_data_predict_556673_20210428_11.json_valid.json')
+    #analysis_text("./data/dev_data_5000_object_predict.txt_forget.text")
