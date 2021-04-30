@@ -291,7 +291,8 @@ def predict_subject_object(model_subject_path,model_object_path):
                 tokenizer,
                 object_input_ids,
                 object_origin_info,
-                object_offset_mapping
+                object_offset_mapping,
+                logger
             )
 
             # 可视化subject + object 的预测结果
@@ -417,7 +418,8 @@ def do_predict(model_subject_path,model_object_path,model_relation_path):
                 tokenizer,
                 object_input_ids,
                 object_origin_info,
-                object_offset_mapping
+                object_offset_mapping,
+                logger
             )
 
             if(len(batch_objects[0]) == 0):

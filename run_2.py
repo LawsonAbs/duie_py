@@ -33,7 +33,7 @@ from torch.utils.data import BatchSampler,SequentialSampler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from data_loader import  TrainSubjectDataset,TrainSubjectDataCollator, from_dict2object4_evaluate
-from utils import decode_subject,decode_object, decoding, find_entity, get_precision_recall_f1, visualize_subject_object, visualize_subject_object_2, write_prediction_results
+from utils import decode_subject,decode_object, decoding, find_entity, get_precision_recall_f1, visualize_object, visualize_subject_object, visualize_subject_object_2, write_prediction_results
 
 from data_loader import from_dict2object,from_dict2_relation
 
@@ -78,7 +78,7 @@ with open(id2object_map_path, 'r', encoding='utf8') as fp:
     id2object_map = json.load(fp)
 
 roberta_base_name = "/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch"
-roberta_large_name = "/pretrains/pt/clue-roberta_chinese_clue_large"
+roberta_large_name = "/pretrains/pt/clue-roberta-chinese-clue-large"
 model_object = ObjectModel(roberta_base_name,768,object_class_num)
 if args.init_checkpoint is not None and os.path.exists(args.init_checkpoint):
     model_object.load_state_dict(t.load(args.init_checkpoint))
@@ -105,18 +105,6 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s -%(name)s - %(message)s'
                     )
 logger = logging.getLogger("object")
 
-
-
-"""
-可视化object的预测结果
-"""
-def visualize_object(pred_file_path, all_objects, all_object_labels):
-    with open(pred_file_path,'w') as f:
-        for item in zip(all_objects,all_object_labels):
-            objects,labels = item
-            f.write(str(objects) +"\n")
-            f.write(str(labels) + "\n")
-            f.write("\n")
 
 
 
@@ -153,21 +141,24 @@ def evaluate(model_object,dev_data_loader,pred_file_path):
                                                                batch_object_input_ids=object_input_ids,
                                                                tokenizer=tokenizer,
                                                                batch_object_origin_info=object_origin_info,
-                                                               batch_object_offset_mapping=batch_object_offset_mapping
+                                                               batch_object_offset_mapping=batch_object_offset_mapping,
+                                                               logger = logger
                                                                )
             all_subjects.append(batch_subjects)
             all_objects.append(batch_objects)
             all_object_labels.append(batch_object_labels)
 
             # 写入到文件中(w)
-            visualize_subject_object_2(pred_file_path,batch_subjects,batch_objects)
+            #visualize_subject_object_2(pred_file_path,batch_subjects,batch_objects)
+            visualize_object(pred_file_path,batch_objects)
             avg_loss = total_loss / len(dev_data_loader)
             logger.info(f"平均损失是：{avg_loss}")
             logger.info(f"未预测到的object 数目是：{invalid_num}")
 
-    recall,precision,f1 = cal_subject_object_metric(pred_file_path,args.dev_data_path)
+    #recall,precision,f1 = cal_subject_object_metric(pred_file_path,args.dev_data_path)
+    recall,precision,f1 = cal_object_metric(pred_file_path, args.dev_data_path)
     #logger.info(f"recall={recall}\n,precision={precision}\n,f1={f1}")
-    print(f"recall={recall},precision={precision},f1={f1}")
+    print(f"recall={recall},\nprecision={precision},\nf1={f1}\n")
     return recall,precision,f1
 
 
@@ -197,7 +188,7 @@ def do_train():
         #batch_sampler=train_batch_sampler,
         batch_size=args.batch_size,
         collate_fn=collator, # 重写一个 collator
-        shuffle=True
+        shuffle=False
         )
 
     dev_dataset = TrainSubjectDataset.from_file(
@@ -216,12 +207,9 @@ def do_train():
 
     # 需要合并所有模型的参数    
     optimizer = t.optim.AdamW(
-        [{'params':model_object.parameters(),'lr':2e-5},
+        [{'params':model_object.parameters(),'lr':1e-5},
         ],
         ) 
-
-    # Defines learning rate strategy.
-    steps_by_epoch = len(train_data_loader)
     
     # Starts training.
     global_step = 0
@@ -268,11 +256,11 @@ def do_train():
                 logging_loss = 0
         recall,precision,f1 = evaluate(model_object,dev_data_loader,pred_file_path)
         if f1 > max_f1 : # 保存最大f1
-            save_path = f"{args.output_dir}/model_object_{global_step}_bert_f1={f1}.pdparams"
+            save_path = f"{args.output_dir}/model_object_{global_step}_bert_f1_{f1}.pdparams"
             t.save(model_object.state_dict(),save_path)
             f1 = max_f1
         elif recall > max_recall: # 再看是否recall达到最大
-            save_path = f"{args.output_dir}/model_object_{global_step}_bert_recall={recall}.pdparams"            
+            save_path = f"{args.output_dir}/model_object_{global_step}_bert_recall_{recall}.pdparams"            
             t.save(model_object.state_dict(),save_path)
             recall = max_recall
     logger.info("\n=====training complete=====")

@@ -432,7 +432,8 @@ def do_train_2(model_subject_path,model_object_path,model_relation_path):
                 tokenizer,
                 object_input_ids,
                 object_origin_info,
-                object_offset_mapping
+                object_offset_mapping,
+                logger
             )
 
             relation_input_ids,relation_token_type_ids,relation_attention_mask,relation_labels,batch_neg_cnt,batch_pos_cnt \

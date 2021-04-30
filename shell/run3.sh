@@ -1,7 +1,7 @@
 CUDA_VISIBLE_DEVICES=0 python /home/lawson/program/DuIE_py/run_3.py \
                     --do_train \
                     --data_path /home/lawson/program/DuIE_py/data \
-                    --max_seq_length 128 \
+                    --max_seq_length 256 \
                     --batch_size 4 \
                     --num_train_epochs 4 \
                     --output_dir /home/lawson/program/DuIE_py/checkpoints \
