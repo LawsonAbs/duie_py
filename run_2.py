@@ -62,7 +62,7 @@ args = parser.parse_args()
 
 
 # Reads object_map.
-object_map_path = os.path.join(args.data_path, "object2id.json")
+object_map_path = os.path.join(args.data_path, "object2id_1.json")
 if not (os.path.exists(object_map_path) and os.path.isfile(object_map_path)):
     sys.exit("{} dose not exists or is not a file.".format(object_map_path))
 with open(object_map_path, 'r', encoding='utf8') as fp:
@@ -71,7 +71,8 @@ with open(object_map_path, 'r', encoding='utf8') as fp:
 object_class_num = len(object_map.keys())  # 得出object 的class num    
 
 # Reads object_map.
-id2object_map_path = os.path.join(args.data_path, "id2object.json")
+# id2object_1.json 是将标签的粒度变得更细了
+id2object_map_path = os.path.join(args.data_path, "id2object_1.json")
 if not (os.path.exists(id2object_map_path) and os.path.isfile(id2object_map_path)):
     sys.exit("{} dose not exists or is not a file.".format(id2object_map_path))
 with open(id2object_map_path, 'r', encoding='utf8') as fp:
@@ -165,12 +166,7 @@ def evaluate(model_object,dev_data_loader,pred_file_path):
 def do_train():
     if args.init_checkpoint is not None and os.path.exists(args.init_checkpoint):
         logger.info(f"加载模型:{args.init_checkpoint}")
-        model_object.load_state_dict(t.load(args.init_checkpoint))
-    
-    # 是在验证集上做pred
-    pred_file_path = (args.dev_data_path).strip(".json") + "_object_predict.txt"     
-    if os.path.exists(pred_file_path):
-        os.remove(pred_file_path)
+        model_object.load_state_dict(t.load(args.init_checkpoint))        
 
     viz_object = Visdom()
     win = "train_object_loss"
@@ -254,13 +250,19 @@ def do_train():
             if global_step % logging_steps ==0 and global_step:
                 viz_object.line([logging_loss], [global_step], win=win, update="append")
                 logging_loss = 0
+        
+        # 是在验证集上做pred
+        pred_file_path = (args.dev_data_path).strip(".json") + "_roberta_{global_step}_object_predict.txt"
+        if os.path.exists(pred_file_path):
+            os.remove(pred_file_path)
+        
         recall,precision,f1 = evaluate(model_object,dev_data_loader,pred_file_path)
         if f1 > max_f1 : # 保存最大f1
-            save_path = f"{args.output_dir}/model_object_{global_step}_bert_f1_{f1}.pdparams"
+            save_path = f"{args.output_dir}/model_object_{global_step}_roberta_f1_{f1}.pdparams"
             t.save(model_object.state_dict(),save_path)
             f1 = max_f1
         elif recall > max_recall: # 再看是否recall达到最大
-            save_path = f"{args.output_dir}/model_object_{global_step}_bert_recall_{recall}.pdparams"            
+            save_path = f"{args.output_dir}/model_object_{global_step}_roberta_recall_{recall}.pdparams"            
             t.save(model_object.state_dict(),save_path)
             recall = max_recall
     logger.info("\n=====training complete=====")
