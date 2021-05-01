@@ -994,7 +994,7 @@ def decode_object(logits,id2object_map,tokenizer,batch_object_input_ids,
                 cur_object += origin_text[left:right]
             elif ind == 0 and cur_object!="": # 将 cur_object 放入到 objects 中
                 cur_object = cur_object.replace("#","") # 替换掉，因为这会干扰后面的实现
-                cur_object = cur_object.strip("《》，。+-.:：（）()、/\\！!") # 剃掉两边的所有符号
+                cur_object = cur_object.strip("《》，。+-.:：（）()、/\\！!<") # 剃掉两边的所有符号
                 # 后处理部分之删除不符合规则的数据
                 # 后处理部分之判断object 的长度：如果长度大于1的才放进去
                 if ( (len(cur_object)> 1)
@@ -1030,7 +1030,7 @@ def decode_object(logits,id2object_map,tokenizer,batch_object_input_ids,
                 if cur_object!="":
                     cur_object = cur_object.replace("#","") # 替换掉，因为这会干扰后面的实现
                     flag = 1
-                    cur_object = cur_object.strip("《》，。+-.:：（）()、/\\！!") # 剃掉两边的所有符号
+                    cur_object = cur_object.strip("《》，。+-.:：（）()、/\\！!<") # 剃掉两边的所有符号
                     for have in objects: # 判断当前此轮预测的结果是否出现在之前的预测结果中
                         if (have.startswith(cur_object)
                             or have.find(cur_object)!=-1 # 如果该串作为子串出现过
@@ -1094,7 +1094,7 @@ def decode_object(logits,id2object_map,tokenizer,batch_object_input_ids,
                 if cur_object!="":
                     cur_object = cur_object.replace("#","") # 替换掉，因为这会干扰后面的实现
                     flag = 1
-                    cur_object = cur_object.strip("《》，。+-.:：（）()、/\\！!") # 剃掉两边的所有符号                        
+                    cur_object = cur_object.strip("《》，。+-.:：（）()、/\\！!<") # 剃掉两边的所有符号                        
                     for have in objects: # 判断当前此轮预测的结果是否出现在之前的预测结果中
                         if (have.startswith(cur_object)
                             or have.find(cur_object)!=-1 # 如果该串作为子串出现过
