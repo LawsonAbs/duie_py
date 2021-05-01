@@ -129,6 +129,76 @@ def get_negative_relation_data(batch_subjects,
 
 
 
+"""
+功能：根据 组合train_data.json中的 subjects 和 objects 得到 realtion 的负样本
+"""
+def get_negative_relation_data_2(              
+              batch_origin_info,#[{...},{...}...{}]  
+              tokenizer: BertTokenizerFast,
+              max_length: Optional[int] = 512,                            
+              ):
+    with open("/home/lawson/program/DuIE_py/data/predicate2id.json", 'r', encoding='utf8') as fp:
+        relation_map = json.load(fp)
+    chineseandpunctuationextractor = ChineseAndPunctuationExtractor()
+
+    # 初始化赋空值
+    input_ids, attention_mask, token_type_ids, labels,offset_mapping = (
+        [] for _ in range(5))
+    
+    
+    ''' example 中的是数据格式如下：
+    {
+    "text": "古往今来，能饰演古龙小说人物“楚留香”的，无一不是娱乐圈公认的美男子，2011年，36岁的张智尧在《楚留香新传》里饰演楚留香，依旧帅得让人无法自拔",
+    "spo_list": [
+        {
+            "predicate": "主演",
+            "object_type": {
+                "@value": "人物"
+            },
+            "subject_type": "影视作品",
+            "object": {
+                "@value": "张智尧"
+            },
+            "subject": "楚留香新传"
+        },
+        {
+            "predicate": "饰演",
+            "object_type": {
+                "inWork": "影视作品",
+                "@value": "人物"
+            },
+            "subject_type": "娱乐人物",
+            "object": {
+                "inWork": "楚留香新传",
+                "@value": "楚留香"
+            },
+            "subject": "张智尧"
+        }
+    ]
+    }
+    '''    
+    cur_index = 0 
+    for example in batch_origin_info:# 处理每一条样本        
+        # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条
+        # 先预处理，将一个example 变成(在其前追加subject+['SEP'])变为多个 example
+        examples,neg_cnt,pos_cnt = process_negative_example_relation_2(example)        
+    
+        # 紧接着处理每个example
+        for example in examples:
+            input_feature = convert_example_to_relation_feature(
+                example, tokenizer, chineseandpunctuationextractor,
+                relation_map, max_length)
+            
+            # 得到所有的训练数据
+            input_ids.append(input_feature.input_ids)            
+            labels.append(input_feature.label)
+            token_type_ids.append(input_feature.token_type_ids)
+            attention_mask.append(input_feature.attention_mask)  
+            #offset_mapping.append(input_feature.offset_mapping)
+    return (input_ids,token_type_ids,attention_mask,labels)
+
+
+
 '''
 使用B+I+O 标签标注
 '''
@@ -1004,6 +1074,70 @@ def process_negative_example_relation(batch_subjects,batch_objects,example):
 
 
 
+def process_negative_example_relation_2(example):
+    examples = []
+    text_raw = example['text']
+    spo_list = example['spo_list']
+    neg_cnt = 0 # 负样本个数
+    pos_cnt = 0 # 正样本个数
+    
+    subjects = []
+    objects = []
+    # step1. 构造正样本
+    gold_subject_object_map = {} # 存储subject => object 的map
+    gold_subject_object_label_map  = {} # subject + object  => label 的map
+    for spo in spo_list:
+        subject = spo['subject']
+        subjects.append(subject)    
+        obj = list(spo['object'].values())        
+        objects.extend(obj) 
+        obj_type = list(spo['object'].keys())
+        predicate = spo['predicate']        
+        if predicate in ['上映时间','饰演','获奖','配音','票房']: # 复杂结构
+            for item in zip(obj,obj_type):
+                obj, obj_type = item
+                if subject == obj: # 为了避免二者相同
+                    continue
+                if subject not in gold_subject_object_map.keys():
+                    gold_subject_object_map[subject] = []
+                    gold_subject_object_map[subject].append(obj)
+                else:
+                    gold_subject_object_map[subject].append(obj)
+                gold_subject_object_label_map[subject+obj] = spo['predicate']+"_"+obj_type
+
+        else  : # 简单结构
+            if subject == obj: # 为了避免二者相同
+                continue
+            if subject not in gold_subject_object_map.keys():
+                gold_subject_object_map[subject] = []
+                gold_subject_object_map[subject].append(obj[0])
+                
+            else:
+                gold_subject_object_map[subject].append(obj[0])
+            gold_subject_object_label_map[subject+obj[0]] = spo['predicate']
+        
+    # step1. 构造负样本
+    for subject in subjects:
+        for obj in objects:
+            text = subject + '。' + obj +"。"+ text_raw
+            if (subject not in gold_subject_object_map.keys()) or (obj not in gold_subject_object_map[subject]): # 预测错误
+                cur_example = {"spo_list":{"predicate":"O"},"text":text} 
+                examples.append(cur_example)
+                neg_cnt += 1
+            else:
+                cur_example = {"spo_list":{"predicate":gold_subject_object_label_map[subject+obj]},"text":text} 
+                examples.append(cur_example)
+                pos_cnt += 1
+    
+    # 构造object在前，subject在后的负样本  => 确保模型学到先后关系
+    for obj in objects:
+        for subject in subjects:
+            text = obj + '。' + subject +"。"+ text_raw
+            if (obj not in gold_subject_object_map.keys()) or (subject not in gold_subject_object_map[obj]): # 预测错误
+                cur_example = {"spo_list":{"predicate":"O"},"text":text} 
+                examples.append(cur_example)
+                neg_cnt += 1            
+    return examples,neg_cnt,pos_cnt
 
 
 
