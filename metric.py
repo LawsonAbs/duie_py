@@ -218,10 +218,11 @@ def cal_object_metric(pred_file_path,dev_data_file_path):
         while(line):
             line_objects = set() # 当前这条样例中的数据
             line = line.strip("\n")
+            line = line.strip('\t')
             if line.startswith("None"):
                 all_objects.append([]) # 加入一个空的
             elif len(line) != 0:
-                line = line.split()
+                line = line.split("\t")
                 all_objects.append(line)
             
             line = f.readline()
@@ -241,7 +242,7 @@ def cal_object_metric(pred_file_path,dev_data_file_path):
             if pred in golds:
                 correct_num+=1
             else:
-                redundant.append(pred)
+                redundant.append(pred)                    
         
         for gold in golds:
             if gold not in preds:
@@ -270,9 +271,9 @@ def cal_object_metric(pred_file_path,dev_data_file_path):
     if os.path.exists(redundant_temp):
         os.remove(redundant_temp)
     with open(redundant_temp,'w') as f:
-        for line in redundant:            
+        for line in redundant:
             f.write(line+"\n")
-    
+    #print(f"recall={recall},\nprecistion={precision},\nf1={f1}")
     return (recall,precision,f1)
 
 
@@ -348,7 +349,7 @@ def cal_subject_object_metric(pred_file_path,dev_data_file_path):
     
     print(f"recall = {recall},\nprecision={precision},\nf1={f1}")
     print(f"correct_num={correct_num}\npred_num={pred_num}\ngold_num={gold_num}")
-    forget_temp = pred_file_path+"_forget.text"
+    forget_temp = pred_file_path+"_forget.txt"
     if os.path.exists(forget_temp):
         os.remove(forget_temp)
     with open(forget_temp,'w') as f:
@@ -358,7 +359,7 @@ def cal_subject_object_metric(pred_file_path,dev_data_file_path):
             right = line[-1]
             f.write(left+"\t"+right+"\n")
 
-    redundant_temp = pred_file_path+"_redundant.text"
+    redundant_temp = pred_file_path+"_redundant.txt"
     if os.path.exists(redundant_temp):
         os.remove(redundant_temp)
     with open(redundant_temp,'w') as f:
@@ -371,12 +372,13 @@ def cal_subject_object_metric(pred_file_path,dev_data_file_path):
     return recall,precision,f1
 
 if __name__ == "__main__":
-    dev_data_path = "/home/lawson/program/DuIE_py/data/dev_data_100.json"
+    dev_data_path = "/home/lawson/program/DuIE_py/data/dev_data_5000.json"
     # pred_file_path = "./data/predict/dev_data_subject_predict_model_subject_bert_64236_3333.txt"
     #pred_file_path = "./data/predict/dev_data_subject_predict_model_subject_60000_roberta.txt"
     #cal_subject_metric(dev_data_file_path,pred_file_path)
     #visual_diff_subject(dev_data_file_path,pred_file_path)
     
-    pred_file_path = "/home/lawson/program/DuIE_py/data/dev_data_100_object_predict.txt"
-    cal_subject_object_metric(pred_file_path=pred_file_path,dev_data_file_path= dev_data_path)
+    pred_file_path = "/home/lawson/program/DuIE_py/data/dev_data_5000_object_predict.txt"
+    #cal_subject_object_metric(pred_file_path=pred_file_path,dev_data_file_path= dev_data_path)
     #cal_subject_metric(dev_data_file_path=dev_data_path,pred_file_path=pred_file_path)
+    cal_object_metric(pred_file_path,dev_data_path)
