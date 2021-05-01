@@ -33,7 +33,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from transformers import BertTokenizerFast, BertForSequenceClassification
 from transformers.utils.dummy_pt_objects import BertModel, get_polynomial_decay_schedule_with_warmup
 
-from data_loader import  DataCollator,TrainSubjectDataset,TrainSubjectDataCollator, from_dict2_relation4_evaluate
+from data_loader import  DataCollator,TrainSubjectDataset,TrainSubjectDataCollator, from_dict2_relation4_evaluate, get_negative_relation_data_2
 from data_loader import PredictSubjectDataset,PredictSubjectDataCollator
 from data_loader import get_negative_relation_data,from_dict2object
 from utils import decode_relation_class, decode_subject,decode_object, decoding, find_entity, get_all_subjects, get_precision_recall_f1, post_process, write_prediction_results
@@ -192,6 +192,7 @@ def evaluate(model_relation,dev_data_loader,tokenizer,pred_file_path):
     print(f"recall = {f1}, precision = {f1}, f1 = {f1}") 
     logger.info(f"recall = {f1}, precision = {f1}, f1 = {f1}") 
     logger.info("\n=====evaluating complete=====")
+    return f1
 
 
 def do_train():
@@ -500,6 +501,163 @@ def do_train_2(model_subject_path,model_object_path,model_relation_path):
     logger.info("\n=====training complete=====")
 
 
+"""
+这里使用的是train_data.json 中subject 和 object 的组合作为正负类。这样应该可以提高模型最后的泛化性能
+"""
+def do_train_3(model_relation_path):
+    relation_name_or_path = "/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch"
+    model_relation = RelationModel(relation_name_or_path,relation_class_num)
+    model_relation = model_relation.cuda()
+    if model_relation_path != None and os.path.exists(model_relation_path):
+        model_relation.load_state_dict(t.load(model_relation_path))
+    tokenizer = BertTokenizerFast.from_pretrained("/pretrains/pt/chinese_RoBERTa-wwm-ext_pytorch")
+    
+    # Loads dataset.
+    # 这里之所以使用 TrainSubjectDataset 是因为需要加载原始的数据，通过原始的数据才可以得到训练 relation 的数据
+    logger.info(f"Preprocessing data, loaded from {args.train_data_path}")
+    train_dataset = TrainSubjectDataset.from_file(
+        args.train_data_path,
+        tokenizer,
+        args.max_seq_length,
+        True
+        )
+    collator = TrainSubjectDataCollator()
+    train_data_loader = DataLoader(        
+        dataset=train_dataset,
+        #batch_sampler=train_batch_sampler,
+        batch_size=args.batch_size,
+        collate_fn=collator, # 重写一个 collator
+        )
+    
+    dev_dataset = TrainSubjectDataset.from_file(
+        args.dev_data_path,
+        tokenizer,
+        args.max_seq_length,
+        True
+        )    
+    dev_data_loader = DataLoader(        
+        dataset=dev_dataset,        
+        batch_size=args.batch_size,
+        collate_fn=collator, # 重写一个 collator
+        )
+    
+    viz = Visdom()
+    win = "train_loss_negative_2"  
+    res = [] # 最后的预测结果
+    subject_invalid_num = 0 # 预测失败的个数
+    all_known_subjects = get_all_subjects(train_data_path="/home/lawson/program/DuIE_py/data/train_data.json")
+    
+    optimizer = t.optim.AdamW(
+        [{'params':model_relation.parameters(),'lr':2e-5},
+        ],
+        )
+
+    # Starts training.
+    global_step = 0
+    logging_steps = 50
+    logging_loss = 0
+    max_f1 = 0
+    evaluate_step = 2000
+    for epoch in tqdm(range(args.num_train_epochs)):
+        total_neg_cnt = 0
+        total_pos_cnt = 0
+        for batch in tqdm(train_data_loader):
+            # origin_info 是原始的json格式的信息
+            input_ids,token_type_ids,attention_mask, batch_origin_info,batch_labels,offset_mapping = batch
+    
+            relation_input_ids,relation_token_type_ids,relation_attention_mask,relation_labels \
+                = get_negative_relation_data_2(batch_origin_info,tokenizer,max_length=args.max_seq_length)
+                        
+            relation_input_ids = t.tensor(relation_input_ids).cuda()
+            relation_token_type_ids = t.tensor(relation_token_type_ids).cuda()
+            relation_attention_mask = t.tensor(relation_attention_mask).cuda()
+            relation_labels = t.tensor(relation_labels).cuda()
+            
+            # 随机采样
+            # 01.降低batch的大小；02 训练更快收敛
+            # 02.采8个正样本，8个负样本            
+            non_zero_index = t.nonzero(relation_labels)
+            non_zero_index = non_zero_index.squeeze()
+            non_zero_index = non_zero_index.tolist()
+            random.shuffle(non_zero_index) # 随机一下，没有返回值，是原地shuffle
+            non_zero_index = t.tensor(non_zero_index)
+            if len(non_zero_index) > 8:
+                non_zero_index = non_zero_index[0:8]
+            non_zero_index = non_zero_index.cuda()
+            pos_relation_input_ids = t.index_select(relation_input_ids,0,non_zero_index) # 找出正样本
+            pos_relation_token_type_ids = t.index_select(relation_token_type_ids,0,non_zero_index) 
+            pos_attention_mask = t.index_select(relation_attention_mask,0,non_zero_index) 
+            pos_labels = t.index_select(relation_labels,0,non_zero_index)
+
+            zero_index = [i for i in range(len(relation_labels)) if not relation_labels[i]]
+            zero_index = t.tensor(zero_index)
+            zero_index = zero_index.squeeze()
+            zero_index = zero_index.tolist()
+            random.shuffle(zero_index)
+            zero_index = t.tensor(zero_index)
+            if len(zero_index) > 8:
+                zero_index = zero_index[0:8]
+            zero_index = zero_index.cuda()
+            # 找出负样本
+            neg_relation_input_ids = t.index_select(relation_input_ids,0,zero_index) # 找出正样本
+            neg_relation_token_type_ids = t.index_select(relation_token_type_ids,0,zero_index) 
+            neg_attention_mask = t.index_select(relation_attention_mask,0,zero_index) 
+            neg_labels = t.index_select(relation_labels,0,zero_index)
+
+            # 将正负样本拼接在一起
+            relation_input_ids =  t.cat((pos_relation_input_ids,neg_relation_input_ids),0)
+            relation_attention_mask = t.cat((pos_attention_mask,neg_attention_mask),0)
+            relation_token_type_ids = t.cat((pos_relation_token_type_ids,neg_relation_token_type_ids),0)
+            relation_labels = t.cat((pos_labels,neg_labels),0)
+            
+            
+            # 这个模型直接得到loss
+            out = model_relation(input_ids=relation_input_ids,
+                                    token_type_ids=relation_token_type_ids,
+                                    attention_mask=relation_attention_mask,
+                                    labels = relation_labels
+                                    )
+            loss = out.loss
+            loss.backward()
+            optimizer.step()
+            #lr_scheduler.step()
+            optimizer.zero_grad()                                    
+            
+            avg_loss = loss.item() / relation_input_ids.size(0) 
+            logger.info(f"平均每个样本的损失时：avg_loss = {avg_loss}")
+            if avg_loss > 2: # 重点关注一下这种损失的数据
+                logger.info(f"{batch_origin_info}")
+            logging_loss += avg_loss
+            # 打日志
+            if global_step % logging_steps ==0 and global_step : 
+                viz.line([logging_loss], [global_step], win=win, update="append")
+                logging_loss = 0
+            
+            # total_neg_cnt += batch_neg_cnt
+            # total_pos_cnt += batch_pos_cnt  
+            # logger.info(f"batch_neg_cnt:{batch_neg_cnt}\n,\
+            #             batch_pos_cnt ={batch_pos_cnt}\n,\
+            #             total_neg_cnt={total_neg_cnt}\n,\
+            #             total_pos_cnt={total_pos_cnt}")
+            global_step += 1
+
+            if global_step % evaluate_step == 0 and global_step:
+                # 是在验证集上做pred
+                pred_file_path = (args.dev_data_path).strip(".json") + f"_roberta_{global_step}_object_predict.txt"
+                if os.path.exists(pred_file_path):
+                    os.remove(pred_file_path)
+                
+                f1 = evaluate(model_relation,dev_data_loader,tokenizer,pred_file_path)
+                if f1 > max_f1 : # 保存最大f1
+                    save_path = f"{args.output_dir}/model_relation_{global_step}_roberta_f1_{f1}.pdparams"
+                    t.save(model_relation.state_dict(),save_path)
+                    f1 = max_f1
+
+        # 每个epoch 之后保存模型
+        # t.save(model_relation.state_dict(),os.path.join(args.output_dir,
+        #                 "model_relation_%d_roberta_epoch.pdparams" % (global_step)))                
+    logger.info("\n=====training complete=====")
+
 
 if __name__ == "__main__":
     set_random_seed(args.seed)
@@ -507,10 +665,11 @@ if __name__ == "__main__":
     device = t.device("cuda" if t.cuda.is_available() and not args.n_gpu else "cpu")    
 
     if args.do_train:
-        model_subject_path = args.model_subject_path
-        model_object_path = args.model_object_path
-        model_relation_path = args.model_relation_path
-        do_train_2(model_subject_path,model_object_path,model_relation_path)
+        # model_subject_path = args.model_subject_path
+        # model_object_path = args.model_object_path
+        # model_relation_path = args.model_relation_path
+        # do_train_2(model_subject_path,model_object_path,model_relation_path)
+        do_train_3(model_relation_path=None)
         #do_train()
     if args.do_eval:
         # ========================== subtask 1. 预测subject ==========================
