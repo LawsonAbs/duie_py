@@ -46,7 +46,7 @@ ObjectInputFeature = collections.namedtuple("ObjectInputFeature", [
 
 # TODO：弄清楚这里的语法是什么
 RelationInputFeature = collections.namedtuple("RelationInputFeature", [
-    "input_ids","token_type_ids","attention_mask","label"    
+    "input_ids","token_type_ids","attention_mask","label"
 ])
 
 
@@ -144,7 +144,7 @@ def get_negative_relation_data_2(
     # 初始化赋空值
     input_ids, attention_mask, token_type_ids, labels,offset_mapping = (
         [] for _ in range(5))
-    
+    relative_indexs = []
     
     ''' example 中的是数据格式如下：
     {
@@ -182,20 +182,26 @@ def get_negative_relation_data_2(
         # 这里的example 是单条语句，需要使用for 循环，将其拼接成多条
         # 先预处理，将一个example 变成(在其前追加subject+['SEP'])变为多个 example
         examples,neg_cnt,pos_cnt = process_negative_example_relation_2(example)        
-    
+
         # 紧接着处理每个example
         for example in examples:
             input_feature = convert_example_to_relation_feature(
                 example, tokenizer, chineseandpunctuationextractor,
                 relation_map, max_length)
-            
+            text = example['text']
+            text = text.split("。")
+            subject = text[0]
+            obj = text[1]
+            raw_text = "".join(text[2::])
+            relative_index = abs(raw_text.find(subject) - raw_text.find(obj))
             # 得到所有的训练数据
-            input_ids.append(input_feature.input_ids)            
+            input_ids.append(input_feature.input_ids)
             labels.append(input_feature.label)
             token_type_ids.append(input_feature.token_type_ids)
             attention_mask.append(input_feature.attention_mask)  
+            relative_indexs.append(relative_index)
             #offset_mapping.append(input_feature.offset_mapping)
-    return (input_ids,token_type_ids,attention_mask,labels)
+    return (input_ids,token_type_ids,attention_mask,labels,relative_indexs)
 
 
 
@@ -670,6 +676,7 @@ def convert_example_to_relation_feature(
         token_type_ids = np.array(token_type_ids),
         attention_mask = np.array(attention_mask),        
         label = label,
+        #relatvie_index = relative_index
     #    offset_mapping= np.array(offset_mapping)
         )
 
@@ -838,7 +845,7 @@ class TrainSubjectDataset(Dataset):
                   ):
                   
         assert os.path.exists(file_path) and os.path.isfile(file_path), f"{file_path} dose not exists or is not a file."
-        subject_map_path = os.path.join(os.path.dirname(file_path), "subject2id_1.json")
+        subject_map_path = os.path.join(os.path.dirname(file_path), "subject2id.json")
         assert os.path.exists(subject_map_path) and os.path.isfile(subject_map_path), f"{subject_map_path} dose not exists or is not a file."
         with open(subject_map_path, 'r', encoding='utf8') as fp:
             subject_map = json.load(fp)
@@ -1081,16 +1088,17 @@ def process_negative_example_relation_2(example):
     neg_cnt = 0 # 负样本个数
     pos_cnt = 0 # 正样本个数
     
-    subjects = []
-    objects = []
+    subjects = set() # 为了避免重复加入
+    objects = set()
     # step1. 构造正样本
     gold_subject_object_map = {} # 存储subject => object 的map
     gold_subject_object_label_map  = {} # subject + object  => label 的map
     for spo in spo_list:
         subject = spo['subject']
-        subjects.append(subject)    
-        obj = list(spo['object'].values())        
-        objects.extend(obj) 
+        subjects.add(subject)    
+        obj = list(spo['object'].values())
+        for i in obj:
+            objects.add(i) 
         obj_type = list(spo['object'].keys())
         predicate = spo['predicate']        
         if predicate in ['上映时间','饰演','获奖','配音','票房']: # 复杂结构
@@ -1128,15 +1136,13 @@ def process_negative_example_relation_2(example):
                 cur_example = {"spo_list":{"predicate":gold_subject_object_label_map[subject+obj]},"text":text} 
                 examples.append(cur_example)
                 pos_cnt += 1
-    
-    # 构造object在前，subject在后的负样本  => 确保模型学到先后关系
-    for obj in objects:
-        for subject in subjects:
-            text = obj + '。' + subject +"。"+ text_raw
+
+            # 构造object在前，subject在后的负样本  => 确保模型学到先后关系
+            text2 = obj + '。' + subject +"。"+ text_raw
             if (obj not in gold_subject_object_map.keys()) or (subject not in gold_subject_object_map[obj]): # 预测错误
-                cur_example = {"spo_list":{"predicate":"O"},"text":text} 
+                cur_example = {"spo_list":{"predicate":"O"},"text":text2} 
                 examples.append(cur_example)
-                neg_cnt += 1            
+                neg_cnt += 1
     return examples,neg_cnt,pos_cnt
 
 
@@ -1436,7 +1442,7 @@ def from_dict2_relation4_evaluate(
     # 初始化赋空值
     input_ids, attention_mask, token_type_ids, labels,offset_mapping = (
         [] for _ in range(5))
-    
+    relative_indexs = []
     batch_subjects = []
     batch_objects = []
     # evaluate 模式  
@@ -1450,6 +1456,13 @@ def from_dict2_relation4_evaluate(
                 example, tokenizer, chineseandpunctuationextractor,
                 relation_map, max_length)
             
+            text = example['text']
+            text = text.split("。")
+            subject = text[0]
+            obj = text[1]
+            raw_text = "".join(text[2::])
+            relative_index = abs(raw_text.find(subject) - raw_text.find(obj))
+            
             # 得到所有的训练数据
             input_ids.append(input_feature.input_ids)            
             labels.append(input_feature.label)
@@ -1457,8 +1470,9 @@ def from_dict2_relation4_evaluate(
             attention_mask.append(input_feature.attention_mask)  
             batch_subjects.append(example['spo_list']['subject'])
             batch_objects.append(example['spo_list']['object']['@value'])
+            relative_indexs.append(relative_index)
             
-    return (input_ids,token_type_ids,attention_mask,labels,batch_subjects,batch_objects)
+    return (input_ids,token_type_ids,attention_mask,labels,batch_subjects,batch_objects,relative_index)
 
 
 
